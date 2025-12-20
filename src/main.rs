@@ -1,6 +1,8 @@
 // authors = ["Control Owl <c0ntr01-_-0w1[at]r-o0-t[dot]wtf>"]
 // license = "CC-BY-NC-ND-4.0 [2025] Control Owl"
 
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
+
 // Target Bitcoin address for Puzzle #72 (compressed P2PKH)
 // Puzzle #72 uses exactly 71 bits of entropy (after the leading '8' bit)
 const TARGET_ADDRESS: &str = "1JTK7s9YVYywfm5XUH7RNhHJH1LshCaRFR";
@@ -40,12 +42,16 @@ const PARALLEL_KEYS: usize = 64;
 // but increase potential rework on crash; we use assignment log to avoid skips.
 const CHUNK_SIZE: u128 = (PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
 
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
+
+use cust::{init, prelude::*};
 use hex::encode as hex_encode;
 use rayon::prelude::*;
 use ripemd::Ripemd160;
 use secp256k1::Secp256k1;
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
+use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::BufRead;
 use std::io::{self, Write};
@@ -56,7 +62,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant, SystemTime};
 
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
+
 static TOTAL_CHECKED: AtomicU64 = AtomicU64::new(0);
+static FOUND: AtomicBool = AtomicBool::new(false);
 
 lazy_static::lazy_static! {
     static ref DASHBOARD: Arc<Mutex<Vec<ThreadStatus>>> = Arc::new(Mutex::new(Vec::new()));
@@ -100,243 +109,81 @@ struct AllocState {
     pending: VecDeque<Chunk>, // recovered chunks to re-run
 }
 
-// fn main() {
-//     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
-//         backup_and_clean();
-//     } else {
-//         fs::create_dir_all(STATUS_DIR).expect("Failed to create status directory");
-//         println!("First run detected — starting fresh.");
-//     }
-//
-//     let num_threads = num_cpus::get();
-//
-//     let start = u128::from_str_radix(RANGE_START_HEX, 16).unwrap();
-//     let total_keys_u128: u128 = 1u128 << N_BITS; // authoritative domain size
-//     let end = start + total_keys_u128 - 1; // derived end consistent with N_BITS
-//
-//     println!("Searching Bitcoin Puzzle #72 (CPU-only)");
-//     println!("Target address: {}", TARGET_ADDRESS);
-//     println!("Target address (h160): {:?}", TARGET_ENCODED);
-//     println!("Range : {:019X} to {:019X}", start, end);
-//     println!("Total keys : {} (2^{})", total_keys_u128, N_BITS);
-//     println!("Using {} CPU threads", num_threads);
-//     println!("Traversal: key = start + rev71((A*i + B) mod 2^71), i = 0..2^71-1");
-//     println!("A (odd) = {:X}", A_CONST & N_MASK);
-//     println!("B = {:X}", B_CONST & N_MASK);
-//
-//     let global_start = Instant::now();
-//     let shutdown = Arc::new(AtomicBool::new(false));
-//
-//     // Initialize dashboard
-//     {
-//         let mut dash = DASHBOARD.lock().unwrap();
-//         dash.clear();
-//         dash.extend((0..num_threads).map(|_| ThreadStatus::default()));
-//     }
-//
-//     // Load progress from previous session
-//     let alloc_log_path = if Path::new(ALLOC_LOG_FILE).exists() {
-//         ALLOC_LOG_FILE.to_string()
-//     } else {
-//         find_latest_backup_alloc_log()
-//     };
-//
-//     let (pending_from_log, farthest_end_from_log) = if !alloc_log_path.is_empty() {
-//         load_assignment_log_from_path(&alloc_log_path)
-//     } else {
-//         (VecDeque::new(), 0)
-//     };
-//
-//     let next_i_from_file = load_next_i();
-//     let initial_next_i = std::cmp::max(farthest_end_from_log, next_i_from_file);
-//
-//     let alloc = Arc::new(Mutex::new(AllocState {
-//         next_i: initial_next_i.min(total_keys_u128),
-//         pending: pending_from_log.clone(),
-//     }));
-//
-//     let _ = fs::remove_file(ALLOC_LOG_FILE);
-//     File::create(ALLOC_LOG_FILE).expect("Failed to create new ALLOC.log");
-//
-//     println!(
-//         "Recovered {} unfinished chunks. Starting fresh log.",
-//         pending_from_log.len()
-//     );
-//
-//     // Dashboard thread
-//     let dash_starts = start;
-//     let dash_ends = end;
-//     let dash_shutdown = shutdown.clone();
-//
-//     let dash_thread = spawn(move || {
-//         while !dash_shutdown.load(Ordering::Relaxed) {
-//             print_dashboard(dash_starts, dash_ends, global_start, num_threads);
-//             sleep(Duration::from_secs(2));
-//         }
-//         print_dashboard(dash_starts, dash_ends, global_start, num_threads);
-//     });
-//
-//     // Panic hook
-//     {
-//         let alloc_for_panic = alloc.clone();
-//         panic::set_hook(Box::new(move |_info| {
-//             save_alloc_state(&alloc_for_panic);
-//             eprintln!("\n\nPanic detected! Progress saved to status files.");
-//         }));
-//     }
-//
-//     (0..num_threads).into_par_iter().for_each(|t| {
-//         let t_usize = t;
-//         let mut checked: u64 = 0;
-//         let mut last_stat = Instant::now();
-//         let mut last_save = Instant::now();
-//
-//         loop {
-//             if shutdown.load(Ordering::Relaxed) {
-//                 break;
-//             }
-//
-//             let maybe_chunk = {
-//                 let mut a = alloc.lock().unwrap();
-//
-//                 if let Some(ch) = a.pending.pop_front() {
-//                     Some(ch)
-//                 } else if a.next_i < total_keys_u128 {
-//                     let start_i = a.next_i;
-//                     let len = CHUNK_SIZE.min(total_keys_u128 - start_i);
-//
-//                     a.next_i += len;
-//
-//                     save_next_i(a.next_i);
-//                     append_log_assigned(start_i, len);
-//
-//                     Some(Chunk { start_i, len })
-//                 } else {
-//                     None
-//                 }
-//             };
-//
-//             let chunk = match maybe_chunk {
-//                 Some(c) => c,
-//
-//                 None => break,
-//             };
-//
-//             let mut i = chunk.start_i;
-//             let end_i = chunk.start_i + chunk.len;
-//
-//             while i < end_i {
-//                 if shutdown.load(Ordering::Relaxed) {
-//                     break;
-//                 }
-//
-//                 // Build batch of PARALLEL_KEYS
-//                 let mut key_bytes_batch = [[0u8; 32]; PARALLEL_KEYS];
-//                 let mut k_batch = [0u128; PARALLEL_KEYS];
-//                 let mut first_k_hex: Option<String> = None;
-//
-//                 let batch_len_u128 = (end_i - i).min(PARALLEL_KEYS as u128);
-//                 let batch_len = batch_len_u128 as usize;
-//
-//                 for p in 0..batch_len {
-//                     let current_i = i + p as u128;
-//                     let x = permute_index(current_i);
-//                     let k = start + x; // derived key inside fixed 2^71 domain
-//
-//                     k_batch[p] = k;
-//
-//                     if first_k_hex.is_none() {
-//                         first_k_hex = Some(format!("{:019X}", k));
-//                     }
-//
-//                     let be = k.to_be_bytes();
-//                     key_bytes_batch[p][16..].copy_from_slice(&be);
-//                 }
-//
-//                 // Check all keys in batch
-//                 for p in 0..batch_len {
-//                     let k = k_batch[p];
-//                     let key_bytes: [u8; 32] = key_bytes_batch[p];
-//
-//                     let is_match = LOCAL_SECP.with(|secp| {
-//                         if let Ok(sk) = secp256k1::SecretKey::from_byte_array(key_bytes) {
-//                             let pk = secp256k1::PublicKey::from_secret_key(secp, &sk);
-//                             let compressed: [u8; 33] = pk.serialize();
-//
-//                             let h160 = Ripemd160::digest(Sha256::digest(compressed));
-//                             h160.as_slice() == TARGET_ENCODED
-//                         } else {
-//                             false
-//                         }
-//                     });
-//
-//                     if is_match {
-//                         save_found_key(t as u64, &key_bytes, k, TARGET_ADDRESS.to_string());
-//                         save_alloc_state(&alloc);
-//
-//                         shutdown.store(true, Ordering::Relaxed);
-//
-//                         return; // exit thread
-//                     }
-//                 }
-//
-//                 // Exact accounting for partial batches
-//                 checked += batch_len as u64;
-//
-//                 TOTAL_CHECKED.fetch_add(batch_len as u64, Ordering::Relaxed);
-//
-//                 let now = Instant::now();
-//
-//                 if now.duration_since(last_stat).as_millis() >= DASHBOARD_UPDATE_INTERVAL_MS {
-//                     {
-//                         let mut dash = DASHBOARD.lock().unwrap();
-//                         let status = &mut dash[t_usize];
-//                         let elapsed = now.duration_since(status.last_update).as_secs_f64();
-//
-//                         if elapsed > 0.1 {
-//                             status.speed_kps =
-//                                 (checked - status.last_checked) as f64 / elapsed / 1_000.0;
-//                         }
-//
-//                         status.checked = checked;
-//                         status.last_i = i;
-//                         status.key_hex = first_k_hex.unwrap_or_else(|| String::from(""));
-//                         status.last_update = now;
-//                         status.last_checked = checked;
-//                     }
-//
-//                     last_stat = now;
-//                 }
-//
-//                 if now.duration_since(last_save).as_secs() >= PROGRESS_SAVE_INTERVAL_SEC {
-//                     save_thread_checkpoint(t as u64, i);
-//
-//                     last_save = now;
-//                 }
-//
-//                 i += PARALLEL_KEYS as u128;
-//             }
-//
-//             // Mark chunk finished in the assignment log
-//             append_log_finished(chunk.start_i);
-//         }
-//
-//         // Final per-thread checkpoint
-//         save_thread_checkpoint(t as u64, 0);
-//
-//         let mut dash = DASHBOARD.lock().unwrap();
-//         dash[t_usize].checked = checked;
-//     });
-//
-//     shutdown.store(true, Ordering::Relaxed);
-//     dash_thread.join().unwrap();
-//
-//     print_dashboard(start, end, global_start, num_threads);
-//
-//     if !shutdown.load(Ordering::Relaxed) {
-//         println!("\nSearch completed across active threads. No key found.");
-//     }
-// }
+struct GpuSolver {
+    _ctx: Context,
+    module: Module,
+    stream: Stream,
+    found_buffer: DeviceBuffer<u64>,
+}
+
+impl GpuSolver {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        init(CudaFlags::empty())?;
+
+        let device_count = Device::num_devices()?;
+        println!("CUDA devices found: {}", device_count);
+        if device_count == 0 {
+            panic!("No CUDA device found!");
+        }
+
+        let device = Device::get_device(0)?;
+        let name = device.name()?;
+        println!("Using GPU: {}", name);
+
+        let ctx = Context::new(device)?;
+
+        let ptx = include_str!("../kernel.ptx");
+        println!("PTX embedded: {} bytes", ptx.len());
+
+        let module = Module::from_ptx(ptx, &[])?;
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
+
+        let mut found_buffer = DeviceBuffer::zeroed(1)?;
+        found_buffer.copy_from(&[u64::MAX])?;
+
+        Ok(Self {
+            _ctx: ctx,
+            module,
+            stream,
+            found_buffer,
+        })
+    }
+
+    fn search_batch(&self, start_i: u64) -> Result<Option<u128>, Box<dyn Error>> {
+        let func = self.module.get_function("generate_and_check_keys")?;
+
+        let block = 256;
+        let grid = ((CHUNK_SIZE as u64 + block as u64 - 1) / block as u64) as u32;
+
+        let stream = &self.stream;
+        unsafe {
+            launch!(func<<<grid, block, 0, stream>>>(
+                start_i,
+                CHUNK_SIZE as u64,
+                A_CONST as u64,
+                B_CONST as u64,
+                u128::from_str_radix(RANGE_START_HEX, 16).unwrap() as u64,
+                self.found_buffer.as_device_ptr()
+            ))?;
+        }
+
+        self.stream.synchronize()?;
+
+        let mut host_found = [0u64; 1];
+        self.found_buffer.copy_to(&mut host_found)?;
+
+        if host_found[0] == u64::MAX {
+            Ok(None)
+        } else {
+            let found_i = host_found[0] as u128;
+            let x = permute_index(found_i);
+            let key = u128::from_str_radix(RANGE_START_HEX, 16).unwrap() + x;
+            Ok(Some(key))
+        }
+    }
+}
+
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
 #[inline(always)]
 fn permute_index(i: u128) -> u128 {
@@ -359,23 +206,6 @@ fn bit_reverse_71(mut x: u128) -> u128 {
 
     r
 }
-
-// #[inline(always)]
-// fn decode_target_h160(addr: &str) -> Option<[u8; 20]> {
-//     // Decode Base58Check, expect 25 bytes: [version=0x00][h160=20 bytes][checksum=4 bytes]
-//     if let Ok(bytes) = bs58::decode(addr).into_vec() {
-//         if bytes.len() == 25 && bytes[0] == 0x00 {
-//             let mut h = [0u8; 20];
-//             h.copy_from_slice(&bytes[1..21]);
-//
-//             let checksum_calc = &Sha256::digest(Sha256::digest(&bytes[..21]))[..4];
-//             if &bytes[21..25] == checksum_calc {
-//                 return Some(h);
-//             }
-//         }
-//     }
-//     None
-// }
 
 fn print_dashboard(start: u128, end: u128, global_start: Instant, num_threads: usize) {
     let dash = DASHBOARD.lock().unwrap();
@@ -637,6 +467,8 @@ fn load_assignment_log_from_path(path: &str) -> (VecDeque<Chunk>, u128) {
     (pending, farthest_end)
 }
 
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
+
 fn main() {
     println!("╔════════════════════════════════════════╗");
     println!("║     BITCOIN PUZZLE #72 SOLVER          ║");
@@ -663,8 +495,9 @@ fn main() {
                 break;
             }
             "2" | "gpu" => {
-                println!("\nGPU mode not implemented yet. Stay tuned!\n");
-                // Future: run_gpu_solver();
+                println!("\nStarting GPU-only mode...\n");
+                run_gpu_solver();
+                break;
             }
             "3" | "both" | "cpu+gpu" => {
                 println!("\nCPU+GPU combined mode not implemented yet.\n");
@@ -898,4 +731,170 @@ fn run_cpu_solver() {
     if !shutdown.load(Ordering::Relaxed) {
         println!("\nSearch completed across active threads. No key found.");
     }
+}
+
+fn run_gpu_solver() {
+    if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
+        backup_and_clean();
+    } else {
+        fs::create_dir_all(STATUS_DIR).expect("Failed to create status directory");
+        println!("First run (GPU) — starting fresh.");
+    }
+
+    let start = u128::from_str_radix(RANGE_START_HEX, 16).unwrap();
+    let total_keys = 1u128 << N_BITS;
+    let end = start + total_keys - 1;
+
+    let solver = match GpuSolver::new() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("GPU initialization failed: {}", e);
+            return;
+        }
+    };
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let global_start = Instant::now();
+
+    // Dashboard: show single "GPU" worker
+    {
+        let mut dash = DASHBOARD.lock().unwrap();
+        dash.clear();
+        dash.push(ThreadStatus {
+            key_hex: String::from("initializing..."),
+            ..Default::default()
+        });
+    }
+
+    // Recover progress
+    let alloc_log_path = if Path::new(ALLOC_LOG_FILE).exists() {
+        ALLOC_LOG_FILE.to_string()
+    } else {
+        find_latest_backup_alloc_log()
+    };
+
+    let (pending, farthest) = if !alloc_log_path.is_empty() {
+        load_assignment_log_from_path(&alloc_log_path)
+    } else {
+        (VecDeque::new(), 0)
+    };
+
+    let next_i = std::cmp::max(farthest, load_next_i()).min(total_keys);
+
+    let mut current_i = next_i;
+    let mut recovered = pending;
+
+    let _ = fs::remove_file(ALLOC_LOG_FILE);
+    File::create(ALLOC_LOG_FILE).unwrap();
+
+    // Dashboard thread
+    let dash_thread = {
+        let shutdown = shutdown.clone();
+        spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                print_dashboard(start, end, global_start, 1); // 1 = GPU "thread"
+                sleep(Duration::from_secs(2));
+            }
+            print_dashboard(start, end, global_start, 1);
+        })
+    };
+
+    // Panic hook
+    panic::set_hook(Box::new(move |_| {
+        eprintln!("\nPanic! Saving progress...");
+        save_next_i(current_i);
+    }));
+
+    println!("Starting GPU search from index: {:X}", current_i);
+
+    // First process recovered chunks
+    while let Some(chunk) = recovered.pop_front() {
+        if FOUND.load(Ordering::Relaxed) {
+            break;
+        }
+
+        println!(
+            "Processing recovered chunk: {:X}..{:X}",
+            chunk.start_i,
+            chunk.start_i + chunk.len
+        );
+
+        if let Some(key) = solver.search_batch(chunk.start_i as u64).unwrap_or(None) {
+            FOUND.store(true, Ordering::Relaxed);
+            save_found_key_gpu(key);
+            break;
+        }
+
+        TOTAL_CHECKED.fetch_add(chunk.len as u64, Ordering::Relaxed);
+        current_i = chunk.start_i + chunk.len;
+        save_next_i(current_i);
+        append_log_finished(chunk.start_i);
+
+        update_gpu_dashboard(current_i, chunk.len as u64);
+    }
+
+    // Main search loop
+    while current_i < total_keys && !FOUND.load(Ordering::Relaxed) {
+        let len = CHUNK_SIZE.min(total_keys - current_i);
+        let chunk_start = current_i;
+
+        append_log_assigned(chunk_start, len);
+        save_next_i(current_i + len);
+
+        if let Some(key) = solver.search_batch(current_i as u64).unwrap_or(None) {
+            FOUND.store(true, Ordering::Relaxed);
+            save_found_key_gpu(key);
+            break;
+        }
+
+        TOTAL_CHECKED.fetch_add(len as u64, Ordering::Relaxed);
+        current_i += len;
+        append_log_finished(chunk_start);
+
+        update_gpu_dashboard(current_i, len as u64);
+    }
+
+    shutdown.store(true, Ordering::Relaxed);
+    dash_thread.join().unwrap();
+
+    if FOUND.load(Ordering::Relaxed) {
+        println!("\nKEY FOUND BY GPU! Saved to {}", FOUND_FILE);
+    } else {
+        println!("\nGPU search completed. No key found.");
+    }
+}
+
+fn update_gpu_dashboard(current_i: u128, checked_this_batch: u64) {
+    let now = Instant::now();
+    let mut dash = DASHBOARD.lock().unwrap();
+
+    if let Some(status) = dash.get_mut(0) {
+        let elapsed = now.duration_since(status.last_update).as_secs_f64();
+
+        if elapsed > 0.5 {
+            status.speed_kps = checked_this_batch as f64 / elapsed / 1_000.0;
+        }
+
+        status.checked += checked_this_batch;
+        status.last_i = current_i;
+
+        let approx_key = u128::from_str_radix(RANGE_START_HEX, 16).unwrap()
+            + permute_index(current_i.saturating_sub(1));
+
+        status.key_hex = format!("{:032x}", approx_key);
+        status.last_update = now;
+        status.last_checked = status.checked;
+    }
+}
+
+fn save_found_key_gpu(private_key: u128) {
+    let key_hex = format!("{:032x}", private_key);
+    let content = format!(
+        "PRIVATE KEY FOUND BY GPU!\nAddress: {}\nPrivate key (hex): {}\nPrivate key (dec): {}\n",
+        TARGET_ADDRESS, key_hex, private_key
+    );
+
+    let _ = fs::write(FOUND_FILE, content);
+
+    println!("\n!!! PRIVATE KEY FOUND BY GPU !!!\nHex: {}", key_hex);
 }
