@@ -42,7 +42,7 @@ const PARALLEL_KEYS: usize = 64;
 // but increase potential rework on crash; we use assignment log to avoid skips.
 const CHUNK_SIZE: u128 = (PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
 
-const SEQUENCE_MODE: bool = true;
+const SEQUENCE_MODE: bool = false;
 
 // Check if key derivation is working
 // Correct hash160 for this key (verified with ecdsa + sha256 + ripemd160)
@@ -544,6 +544,7 @@ fn run_cpu_solver() {
     let start = RANGE_START;
     let total_keys_u128: u128 = 1u128 << N_BITS;
     let end = start + total_keys_u128 - 1;
+
     let global_start = Instant::now();
     let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -755,6 +756,18 @@ fn run_cpu_solver() {
 }
 
 fn run_gpu_solver() {
+    let target_encoded = if TEST_MODE {
+        TEST_TARGET_ENCODED
+    } else {
+        TARGET_ENCODED
+    };
+
+    let target_address = if TEST_MODE {
+        TEST_TARGET_ADDRESS
+    } else {
+        TARGET_ADDRESS
+    };
+
     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
         backup_and_clean();
     } else {
@@ -762,9 +775,9 @@ fn run_gpu_solver() {
         println!("First run (GPU) — starting fresh.");
     }
 
-    let start = RANGE_START;
-    let total_keys = 1u128 << N_BITS;
-    let end = start + total_keys - 1;
+    let start: u128 = RANGE_START;
+    let total_keys_u128: u128 = 1u128 << N_BITS;
+    let end: u128 = start + total_keys_u128 - 1;
 
     let solver = match GpuSolver::new() {
         Ok(s) => s,
@@ -803,7 +816,7 @@ fn run_gpu_solver() {
     let next_i = if SEQUENCE_MODE {
         0u128
     } else {
-        std::cmp::max(farthest, load_next_i()).min(total_keys)
+        std::cmp::max(farthest, load_next_i()).min(total_keys_u128)
     };
 
     let mut current_i = next_i;
@@ -859,8 +872,8 @@ fn run_gpu_solver() {
     }
 
     // Main search loop
-    while current_i < total_keys && !FOUND.load(Ordering::Relaxed) {
-        let len = CHUNK_SIZE.min(total_keys - current_i);
+    while current_i < total_keys_u128 && !FOUND.load(Ordering::Relaxed) {
+        let len = CHUNK_SIZE.min(total_keys_u128 - current_i);
         let chunk_start = current_i;
 
         append_log_assigned(chunk_start, len);
