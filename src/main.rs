@@ -10,10 +10,10 @@ const TARGET_ENCODED: [u8; 20] = [
     191, 116, 19, 232, 223, 78, 122, 52, 206, 157, 193, 62, 47, 38, 72, 120, 62, 197, 74, 219,
 ];
 
-// Define only the start and the bit-size; derive end at runtime (Option 1)
-const RANGE_START_HEX: &str = "800000000000000000"; // 19 hex digits
-const N_BITS: u32 = 71; // domain size = 2^71
-const N_MASK: u128 = (1u128 << N_BITS) - 1; // mask for 71 bits
+// Define only the start and the bit-size; derive end at runtime
+const RANGE_START: u128 = 0x800000000000000000;
+const N_BITS: u32 = 71;
+const N_MASK: u128 = (1u128 << N_BITS) - 1;
 
 // Linear Congruential Generator (LCG) parameters for permutation
 // A_CONST: Multiplier — must be odd and co-prime with 2^71 for full cycle
@@ -41,6 +41,8 @@ const PARALLEL_KEYS: usize = 64;
 // Chunk size claimed atomically per assignment. Larger chunks reduce allocator contention
 // but increase potential rework on crash; we use assignment log to avoid skips.
 const CHUNK_SIZE: u128 = (PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
+
+const SEQUENCE_MODE: bool = true;
 
 // Check if key derivation is working
 // Correct hash160 for this key (verified with ecdsa + sha256 + ripemd160)
@@ -162,7 +164,7 @@ impl GpuSolver {
         let func = self.module.get_function("generate_and_check_keys")?;
 
         let block = 256;
-        let grid = ((CHUNK_SIZE as u64 + block as u64 - 1) / block as u64) as u32;
+        let grid = (CHUNK_SIZE as u64 + block as u64 - 1).div_ceil(block as u64) as u32;
 
         let stream = &self.stream;
         unsafe {
@@ -171,7 +173,7 @@ impl GpuSolver {
                 CHUNK_SIZE as u64,
                 A_CONST as u64,
                 B_CONST as u64,
-                u128::from_str_radix(RANGE_START_HEX, 16).unwrap() as u64,
+                RANGE_START as u64,
                 self.found_buffer.as_device_ptr()
             ))?;
         }
@@ -186,7 +188,7 @@ impl GpuSolver {
         } else {
             let found_i = host_found[0] as u128;
             let x = permute_index(found_i);
-            let key = u128::from_str_radix(RANGE_START_HEX, 16).unwrap() + x;
+            let key = RANGE_START + x;
             Ok(Some(key))
         }
     }
@@ -196,11 +198,12 @@ impl GpuSolver {
 
 #[inline(always)]
 fn permute_index(i: u128) -> u128 {
-    if TEST_MODE {
-        return i; // Sequential: no LCG, no reversal
+    if SEQUENCE_MODE {
+        i
+    } else {
+        let y = (A_CONST.wrapping_mul(i) + B_CONST) & N_MASK;
+        bit_reverse_71(y)
     }
-    let y = (A_CONST.wrapping_mul(i) + B_CONST) & N_MASK;
-    bit_reverse_71(y)
 }
 
 #[inline(always)]
@@ -482,10 +485,7 @@ fn main() {
     println!("║     BITCOIN PUZZLE #72 SOLVER          ║");
     println!("╚════════════════════════════════════════╝");
     println!("Target: {}", TARGET_ADDRESS);
-    println!(
-        "Range : {:019X} ... (2^71 keys)",
-        u128::from_str_radix(RANGE_START_HEX, 16).unwrap()
-    );
+    println!("Range : {}", RANGE_START);
     println!();
 
     loop {
@@ -541,7 +541,7 @@ fn run_cpu_solver() {
 
     let num_threads = num_cpus::get();
 
-    let start = u128::from_str_radix(RANGE_START_HEX, 16).unwrap();
+    let start = RANGE_START;
     let total_keys_u128: u128 = 1u128 << N_BITS;
     let end = start + total_keys_u128 - 1;
     let global_start = Instant::now();
@@ -567,10 +567,10 @@ fn run_cpu_solver() {
         (VecDeque::new(), 0)
     };
 
-    let next_i_from_file = load_next_i();
-    let initial_next_i = if TEST_MODE {
+    let initial_next_i = if SEQUENCE_MODE {
         0u128
     } else {
+        let next_i_from_file = load_next_i();
         std::cmp::max(farthest_end_from_log, next_i_from_file)
     };
 
@@ -762,7 +762,7 @@ fn run_gpu_solver() {
         println!("First run (GPU) — starting fresh.");
     }
 
-    let start = u128::from_str_radix(RANGE_START_HEX, 16).unwrap();
+    let start = RANGE_START;
     let total_keys = 1u128 << N_BITS;
     let end = start + total_keys - 1;
 
@@ -800,7 +800,7 @@ fn run_gpu_solver() {
         (VecDeque::new(), 0)
     };
 
-    let next_i = if TEST_MODE {
+    let next_i = if SEQUENCE_MODE {
         0u128
     } else {
         std::cmp::max(farthest, load_next_i()).min(total_keys)
@@ -903,10 +903,10 @@ fn update_gpu_dashboard(current_i: u128, checked_this_batch: u64) {
         status.checked += checked_this_batch;
         status.last_i = current_i;
 
-        let approx_key = u128::from_str_radix(RANGE_START_HEX, 16).unwrap()
+        let approx_key = if SEQUENCE_MODE { 0 } else { RANGE_START }
             + permute_index(current_i.saturating_sub(1));
 
-        status.key_hex = format!("{:032x}", approx_key);
+        status.key_hex = format!("{:019X}", approx_key);
         status.last_update = now;
         status.last_checked = status.checked;
     }
