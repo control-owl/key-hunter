@@ -1,10 +1,17 @@
 #include <stdint.h>
 
+// __constant__ uint8_t TARGET_H160[20] = {
+//     0xbf, 0x74, 0x13, 0xe8, 0xdf, 0x4e, 0x7a, 0x34,
+//     0xce, 0x9d, 0xc1, 0x3e, 0x2f, 0x26, 0x48, 0x78,
+//     0x3e, 0xc5, 0x4a, 0xdb
+// };
+
+// TEST
 __constant__ uint8_t TARGET_H160[20] = {
-    0xC3, 0x2B, 0xF4, 0xD7, 0xA3, 0x2E, 0xA7, 0xB3,
-    0x3F, 0x7E, 0xA7, 0x1C, 0xB3, 0x5A, 0x9A, 0x9C,
-    0x65, 0xBF, 0xD4, 0xD8
+    0x7e, 0x88, 0x9b, 0x9b, 0x14, 0x1e, 0xaa, 0x54, 0xea, 0x4c, 0x98, 0x85, 0x2c, 0xe9, 0xee, 0xda,
+    0xcf, 0xb2, 0x10, 0x27
 };
+
 
 __device__ __forceinline__ uint64_t bit_reverse_71(uint64_t x) {
     uint64_t r = 0;
@@ -158,19 +165,23 @@ __device__ void ripemd160_cuda(const uint8_t* input, uint8_t* output) {
         ap = ep; ep = dp; dp = ROL(cp,10); cp = bp; bp = t;
     }
 
-    uint32_t temp = h1 + c + dp;
+   uint32_t temp = h1 + c + dp;
     h1 = h2 + d + ep;
     h2 = h3 + e + ap;
     h3 = h4 + a + bp;
     h4 = h0 + b + cp;
     h0 = temp;
 
-    // Output little-endian
-    output[0] = h0; output[1] = h0 >> 8; output[2] = h0 >> 16; output[3] = h0 >> 24;
-    output[4] = h1; output[5] = h1 >> 8; output[6] = h1 >> 16; output[7] = h1 >> 24;
-    output[8] = h2; output[9] = h2 >> 8; output[10] = h2 >> 16; output[11] = h2 >> 24;
-    output[12] = h3; output[13] = h3 >> 8; output[14] = h3 >> 16; output[15] = h3 >> 24;
-    output[16] = h4; output[17] = h4 >> 8; output[18] = h4 >> 16; output[19] = h4 >> 24;
+    // === FIXED: Little-endian output ===
+    uint32_t vals[5] = { h0, h1, h2, h3, h4 };
+    #pragma unroll
+    for (int i = 0; i < 5; ++i) {
+        uint32_t v = vals[i];
+        output[i*4 + 0] = v & 0xFF;
+        output[i*4 + 1] = (v >> 8) & 0xFF;
+        output[i*4 + 2] = (v >> 16) & 0xFF;
+        output[i*4 + 3] = (v >> 24) & 0xFF;
+    }
 }
 
 // ---------------- Kernel ----------------
@@ -186,7 +197,10 @@ extern "C" __global__ void generate_and_check_keys(
     if (idx >= count) return;
 
     uint64_t i = start_i + idx;
-    uint64_t y = (a * i + b) & ((1ULL << 63) - 1);
+
+    // === FIXED: Correct 71-bit mask ===
+    uint64_t y = (a * i + b) & 0x7FFFFFFFFFFFFFFFULL;
+
     uint64_t x = bit_reverse_71(y);
     uint64_t k = range_start + x;
 

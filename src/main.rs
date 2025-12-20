@@ -42,6 +42,15 @@ const PARALLEL_KEYS: usize = 64;
 // but increase potential rework on crash; we use assignment log to avoid skips.
 const CHUNK_SIZE: u128 = (PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
 
+// Check if key derivation is working
+// Correct hash160 for this key (verified with ecdsa + sha256 + ripemd160)
+const TEST_MODE: bool = true;
+const TEST_TARGET_ADDRESS: &str = "1L2GMvQ6nHXrXvNxiBVNDRtz6aov2e2Qv7";
+const TEST_TARGET_ENCODED: [u8; 20] = [
+    0x7e, 0x88, 0x9b, 0x9b, 0x14, 0x1e, 0xaa, 0x54, 0xea, 0x4c, 0x98, 0x85, 0x2c, 0xe9, 0xee, 0xda,
+    0xcf, 0xb2, 0x10, 0x27,
+];
+
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
 use cust::{init, prelude::*};
@@ -187,11 +196,10 @@ impl GpuSolver {
 
 #[inline(always)]
 fn permute_index(i: u128) -> u128 {
-    // LCG on 2^71 plus 71-bit bit-reversal for high-quality permutation
-    let a = A_CONST & N_MASK;
-    let b = B_CONST & N_MASK;
-    let y = (a.wrapping_mul(i) + b) & N_MASK;
-
+    if TEST_MODE {
+        return i; // Sequential: no LCG, no reversal
+    }
+    let y = (A_CONST.wrapping_mul(i) + B_CONST) & N_MASK;
     bit_reverse_71(y)
 }
 
@@ -512,6 +520,18 @@ fn main() {
 
 fn run_cpu_solver() {
     // === Backup & cleanup old session ===
+    let target_encoded = if TEST_MODE {
+        TEST_TARGET_ENCODED
+    } else {
+        TARGET_ENCODED
+    };
+
+    let target_address = if TEST_MODE {
+        TEST_TARGET_ADDRESS
+    } else {
+        TARGET_ADDRESS
+    };
+
     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
         backup_and_clean();
     } else {
@@ -548,7 +568,11 @@ fn run_cpu_solver() {
     };
 
     let next_i_from_file = load_next_i();
-    let initial_next_i = std::cmp::max(farthest_end_from_log, next_i_from_file);
+    let initial_next_i = if TEST_MODE {
+        0u128
+    } else {
+        std::cmp::max(farthest_end_from_log, next_i_from_file)
+    };
 
     let alloc = Arc::new(Mutex::new(AllocState {
         next_i: initial_next_i.min(total_keys_u128),
@@ -653,26 +677,23 @@ fn run_cpu_solver() {
                     let k = k_batch[p];
                     let key_bytes: [u8; 32] = key_bytes_batch[p];
 
-                    let is_match = LOCAL_SECP.with(|secp| {
+                    LOCAL_SECP.with(|secp| {
                         if let Ok(sk) = secp256k1::SecretKey::from_byte_array(key_bytes) {
                             let pk = secp256k1::PublicKey::from_secret_key(secp, &sk);
                             let compressed: [u8; 33] = pk.serialize();
 
                             let h160 = Ripemd160::digest(Sha256::digest(compressed));
-                            h160.as_slice() == TARGET_ENCODED
-                        } else {
-                            false
+
+                            if h160.as_slice() == target_encoded {
+                                save_found_key(t as u64, &key_bytes, k, target_address.to_string());
+                                save_alloc_state(&alloc);
+
+                                shutdown.store(true, Ordering::Relaxed);
+
+                                return; // exit thread
+                            }
                         }
                     });
-
-                    if is_match {
-                        save_found_key(t as u64, &key_bytes, k, TARGET_ADDRESS.to_string());
-                        save_alloc_state(&alloc);
-
-                        shutdown.store(true, Ordering::Relaxed);
-
-                        return; // exit thread
-                    }
                 }
 
                 // Exact accounting for partial batches
@@ -779,7 +800,11 @@ fn run_gpu_solver() {
         (VecDeque::new(), 0)
     };
 
-    let next_i = std::cmp::max(farthest, load_next_i()).min(total_keys);
+    let next_i = if TEST_MODE {
+        0u128
+    } else {
+        std::cmp::max(farthest, load_next_i()).min(total_keys)
+    };
 
     let mut current_i = next_i;
     let mut recovered = pending;

@@ -11,7 +11,7 @@
 .address_size 64
 
 	// .globl	generate_and_check_keys
-.const .align 1 .b8 TARGET_H160[20] = {195, 43, 244, 215, 163, 46, 167, 179, 63, 126, 167, 28, 179, 90, 154, 156, 101, 191, 212, 216};
+.const .align 1 .b8 TARGET_H160[20] = {126, 136, 155, 155, 20, 30, 170, 84, 234, 76, 152, 133, 44, 233, 238, 218, 207, 178, 16, 39};
 
 .visible .entry generate_and_check_keys(
 	.param .u64 generate_and_check_keys_param_0,
