@@ -42,7 +42,7 @@ const PARALLEL_KEYS: usize = 64;
 // but increase potential rework on crash; we use assignment log to avoid skips.
 const CHUNK_SIZE: u128 = (PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
 
-const SEQUENCE_MODE: bool = false;
+const SEQUENCE_MODE: bool = true;
 
 // Check if key derivation is working
 // Correct hash160 for this key (verified with ecdsa + sha256 + ripemd160)
@@ -160,20 +160,28 @@ impl GpuSolver {
         })
     }
 
-    fn search_batch(&self, start_i: u64) -> Result<Option<u128>, Box<dyn Error>> {
+    fn search_batch(&self, start_i: u128) -> Result<Option<u128>, Box<dyn Error>> {
         let func = self.module.get_function("generate_and_check_keys")?;
 
         let block = 256;
         let grid = (CHUNK_SIZE as u64 + block as u64 - 1).div_ceil(block as u64) as u32;
 
+        let range_start = RANGE_START;
+        let a_val = A_CONST;
+        let b_val = B_CONST;
+
         let stream = &self.stream;
         unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
-                start_i,
+                start_i as u64,               // low
+                (start_i >> 64) as u64,       // high
                 CHUNK_SIZE as u64,
-                A_CONST as u64,
-                B_CONST as u64,
-                RANGE_START as u64,
+                a_val as u64,                 // low
+                (a_val >> 64) as u64,         // high
+                b_val as u64,                 // low
+                (b_val >> 64) as u64,         // high
+                range_start as u64,           // low
+                (range_start >> 64) as u64,   // high
                 self.found_buffer.as_device_ptr()
             ))?;
         }
@@ -508,7 +516,7 @@ fn main() {
                 break;
             }
             "3" | "both" | "cpu+gpu" => {
-                println!("\nCPU+GPU combined mode not implemented yet.\n");
+                println!("\nCPU+GPU combined mode...\n");
                 // Future: run_combined_solver();
             }
             _ => {
@@ -519,7 +527,6 @@ fn main() {
 }
 
 fn run_cpu_solver() {
-    // === Backup & cleanup old session ===
     let target_encoded = if TEST_MODE {
         TEST_TARGET_ENCODED
     } else {
@@ -756,18 +763,6 @@ fn run_cpu_solver() {
 }
 
 fn run_gpu_solver() {
-    let target_encoded = if TEST_MODE {
-        TEST_TARGET_ENCODED
-    } else {
-        TARGET_ENCODED
-    };
-
-    let target_address = if TEST_MODE {
-        TEST_TARGET_ADDRESS
-    } else {
-        TARGET_ADDRESS
-    };
-
     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
         backup_and_clean();
     } else {
@@ -857,7 +852,7 @@ fn run_gpu_solver() {
             chunk.start_i + chunk.len
         );
 
-        if let Some(key) = solver.search_batch(chunk.start_i as u64).unwrap_or(None) {
+        if let Some(key) = solver.search_batch(chunk.start_i).unwrap_or(None) {
             FOUND.store(true, Ordering::Relaxed);
             save_found_key_gpu(key);
             break;
@@ -879,7 +874,7 @@ fn run_gpu_solver() {
         append_log_assigned(chunk_start, len);
         save_next_i(current_i + len);
 
-        if let Some(key) = solver.search_batch(current_i as u64).unwrap_or(None) {
+        if let Some(key) = solver.search_batch(current_i).unwrap_or(None) {
             FOUND.store(true, Ordering::Relaxed);
             save_found_key_gpu(key);
             break;
