@@ -46,11 +46,12 @@ const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 10
 // which are responsible for executing threads in parallel.
 // The count can vary by GPU architecture and model, affecting the overall performance and
 // processing power of the graphics card.
+const GPU_TEST_MODE: bool = false;
 const GPU_SM_COUNT: u32 = 14;
 const GPU_CHUNK_SIZE: u128 = 1024 * GPU_SM_COUNT as u128;
 
+// Search mode: Sequence or LCG
 const SEQUENCE_MODE: bool = false;
-const GPU_TEST_MODE: bool = false;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -88,12 +89,12 @@ thread_local! {
 
 #[derive(Clone)]
 struct ThreadStatus {
-    checked: u64,
+    checked: u128,
     last_i: u128,    // last domain index processed (0..2^71-1)
     key_hex: String, // last key hex shown
     speed_kps: f64,
     last_update: Instant,
-    last_checked: u64,
+    last_checked: u128,
 }
 
 impl Default for ThreadStatus {
@@ -635,7 +636,7 @@ fn run_cpu_solver() {
 
     (0..num_threads).into_par_iter().for_each(|t| {
         let t_usize = t;
-        let mut checked: u64 = 0;
+        let mut checked: u128 = 0;
         let mut last_stat = Instant::now();
         let mut last_save = Instant::now();
 
@@ -725,7 +726,7 @@ fn run_cpu_solver() {
                 }
 
                 // Exact accounting for partial batches
-                checked += batch_len as u64;
+                checked += batch_len as u128;
 
                 add_to_total_checked(batch_len as u128);
 
@@ -885,7 +886,7 @@ fn run_gpu_solver() {
         save_next_i(current_i);
         append_log_finished(chunk.start_i);
 
-        update_gpu_dashboard(current_i, chunk.len as u64);
+        update_gpu_dashboard(current_i, chunk.len);
     }
 
     // Main search loop
@@ -906,7 +907,7 @@ fn run_gpu_solver() {
         current_i += len;
         append_log_finished(chunk_start);
 
-        update_gpu_dashboard(current_i, len as u64);
+        update_gpu_dashboard(current_i, len);
     }
 
     shutdown.store(true, Ordering::Relaxed);
@@ -919,15 +920,15 @@ fn run_gpu_solver() {
     }
 }
 
-fn update_gpu_dashboard(current_i: u128, checked_this_batch: u64) {
+fn update_gpu_dashboard(current_i: u128, checked_this_batch: u128) {
     let now = Instant::now();
     let mut dash = DASHBOARD.lock().unwrap();
 
     if let Some(status) = dash.get_mut(0) {
-        let elapsed = now.duration_since(status.last_update).as_secs_f64();
+        let elapsed = now.duration_since(status.last_update).as_millis();
 
-        if elapsed > 0.5 {
-            status.speed_kps = checked_this_batch as f64 / elapsed / 1_000.0;
+        if elapsed > 500_000 {
+            status.speed_kps = (checked_this_batch / elapsed / 1_000_000) as f64;
         }
 
         status.checked += checked_this_batch;
