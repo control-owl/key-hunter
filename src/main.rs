@@ -35,23 +35,22 @@ const DASHBOARD_UPDATE_INTERVAL_MS: u128 = 500; // per-thread display update
 const PROGRESS_SAVE_INTERVAL_SEC: u64 = 5; // per-thread checkpoint
 
 // Batch parallelization inside a thread iteration
-// Tune PARALLEL_KEYS to your CPU cache; 64 is a good default
-const PARALLEL_KEYS: usize = 64;
+// Tune CPU_PARALLEL_KEYS to your CPU cache; 64 is a good default
+const CPU_PARALLEL_KEYS: usize = 64;
 
 // Chunk size claimed atomically per assignment. Larger chunks reduce allocator contention
 // but increase potential rework on crash; we use assignment log to avoid skips.
-const CHUNK_SIZE: u128 = (PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
+const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
 
-const SEQUENCE_MODE: bool = true;
+// SM count refers to the number of Streaming Multiprocessors in a GPU,
+// which are responsible for executing threads in parallel.
+// The count can vary by GPU architecture and model, affecting the overall performance and
+// processing power of the graphics card.
+const GPU_SM_COUNT: u32 = 14;
+const GPU_CHUNK_SIZE: u128 = 1024 * GPU_SM_COUNT as u128;
 
-// Check if key derivation is working
-// Correct hash160 for this key (verified with ecdsa + sha256 + ripemd160)
-const TEST_MODE: bool = true;
-const TEST_TARGET_ADDRESS: &str = "1L2GMvQ6nHXrXvNxiBVNDRtz6aov2e2Qv7";
-const TEST_TARGET_ENCODED: [u8; 20] = [
-    0x7e, 0x88, 0x9b, 0x9b, 0x14, 0x1e, 0xaa, 0x54, 0xea, 0x4c, 0x98, 0x85, 0x2c, 0xe9, 0xee, 0xda,
-    0xcf, 0xb2, 0x10, 0x27,
-];
+const SEQUENCE_MODE: bool = false;
+const GPU_TEST_MODE: bool = false;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -75,7 +74,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
-static TOTAL_CHECKED: AtomicU64 = AtomicU64::new(0);
+static TOTAL_CHECKED_LOW: AtomicU64 = AtomicU64::new(0);
+static TOTAL_CHECKED_HIGH: AtomicU64 = AtomicU64::new(0);
 static FOUND: AtomicBool = AtomicBool::new(false);
 
 lazy_static::lazy_static! {
@@ -144,6 +144,7 @@ impl GpuSolver {
         let ctx = Context::new(device)?;
 
         let ptx = include_str!("../kernel.ptx");
+
         println!("PTX embedded: {} bytes", ptx.len());
 
         let module = Module::from_ptx(ptx, &[])?;
@@ -163,19 +164,26 @@ impl GpuSolver {
     fn search_batch(&self, start_i: u128) -> Result<Option<u128>, Box<dyn Error>> {
         let func = self.module.get_function("generate_and_check_keys")?;
 
-        let block = 256;
-        let grid = (CHUNK_SIZE as u64 + block as u64 - 1).div_ceil(block as u64) as u32;
+        let search_mode = SEQUENCE_MODE;
+        let mut block = 256;
+        let mut grid = GPU_SM_COUNT * 8;
 
-        let range_start = RANGE_START;
-        let a_val = A_CONST;
-        let b_val = B_CONST;
+        if GPU_TEST_MODE {
+            block = 1;
+            grid = 1;
+        }
+
+        let range_start: u128 = if search_mode { 0u128 } else { RANGE_START };
+        let a_val: u128 = A_CONST;
+        let b_val: u128 = B_CONST;
 
         let stream = &self.stream;
         unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
+                search_mode,
                 start_i as u64,               // low
                 (start_i >> 64) as u64,       // high
-                CHUNK_SIZE as u64,
+                GPU_CHUNK_SIZE as u64,
                 a_val as u64,                 // low
                 (a_val >> 64) as u64,         // high
                 b_val as u64,                 // low
@@ -195,9 +203,15 @@ impl GpuSolver {
             Ok(None)
         } else {
             let found_i = host_found[0] as u128;
-            let x = permute_index(found_i);
-            let key = RANGE_START + x;
-            Ok(Some(key))
+
+            let actual_key = if search_mode {
+                found_i
+            } else {
+                let x = permute_index(found_i);
+                RANGE_START + x
+            };
+
+            Ok(Some(actual_key))
         }
     }
 }
@@ -226,14 +240,18 @@ fn bit_reverse_71(mut x: u128) -> u128 {
     r
 }
 
-fn print_dashboard(start: u128, end: u128, global_start: Instant, num_threads: usize) {
+fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, num_threads: usize) {
     let dash = DASHBOARD.lock().unwrap();
-    let total_checked_u64 = TOTAL_CHECKED.load(Ordering::Relaxed);
+
+    let low = TOTAL_CHECKED_LOW.load(Ordering::Relaxed);
+    let high = TOTAL_CHECKED_HIGH.load(Ordering::Relaxed);
+    let total_checked_u128 = (high as u128) << 64 | (low as u128);
+
     let elapsed = global_start.elapsed();
     let elapsed_secs = elapsed.as_secs_f64();
 
     let overall_speed_kps = if elapsed_secs > 0.1 {
-        (total_checked_u64 as f64) / elapsed_secs / 1_000.0
+        total_checked_u128 as f64 / elapsed_secs / 1_000.0
     } else {
         0.0
     };
@@ -249,13 +267,14 @@ fn print_dashboard(start: u128, end: u128, global_start: Instant, num_threads: u
     println!("Target Address: {}", TARGET_ADDRESS);
     println!("Range : {:019X} ──▶ {:019X}", start, end);
     println!("Threads : {}", num_threads);
-    println!("Parallel tasks: {}\n", PARALLEL_KEYS);
+    println!("Parallel tasks: {}\n", CPU_PARALLEL_KEYS);
 
     for t in 0..num_threads {
         let status = &dash[t];
         let idx_hex = format!("{:019X}", status.last_i);
         println!(
-            "CPU {:2} Index: {} Checked: {:8}K Current key: {} Speed: {:6.1} K/s",
+            "{} {:2} Index: {} Checked: {:8}K Current key: {} Speed: {:6.1} K/s",
+            mode,
             t,
             idx_hex,
             status.checked / 1_000,
@@ -269,7 +288,7 @@ fn print_dashboard(start: u128, end: u128, global_start: Instant, num_threads: u
     );
     println!(
         "║ TOTAL CHECKED: {:9}K keys │ OVERALL SPEED: {:7.1} K/s │ Elapsed: {:3}h {:3}m {:3}s ║",
-        (total_checked_u64) / 1_000,
+        (total_checked_u128) / 1_000,
         overall_speed_kps,
         h,
         m,
@@ -497,7 +516,7 @@ fn main() {
     println!();
 
     loop {
-        print!("Select mode:\n  [1] CPU only\n  [2] GPU only (not implemented yet)\n  [3] CPU + GPU (not implemented yet)\n\nChoice (1/2/3): ");
+        print!("Select mode:\n  [1] CPU\n  [2] GPU\n  [3] CPU+GPU\n\nChoice (1/2/3): ");
         io::stdout().flush().unwrap();
 
         let mut input = String::new();
@@ -516,8 +535,8 @@ fn main() {
                 break;
             }
             "3" | "both" | "cpu+gpu" => {
-                println!("\nCPU+GPU combined mode...\n");
-                // Future: run_combined_solver();
+                println!("\nStarting CPU+GPU mode...\n");
+                // run_cpu_and_gpu_solver();
             }
             _ => {
                 println!("Invalid choice. Please enter 1, 2 or 3.\n");
@@ -527,18 +546,19 @@ fn main() {
 }
 
 fn run_cpu_solver() {
-    let target_encoded = if TEST_MODE {
-        TEST_TARGET_ENCODED
-    } else {
-        TARGET_ENCODED
-    };
+    //     let target_encoded = if TEST_MODE {
+    //         TEST_TARGET_ENCODED
+    //     } else {
+    //         TARGET_ENCODED
+    //     };
+    //
+    //     let target_address = if TEST_MODE {
+    //         TEST_TARGET_ADDRESS
+    //     } else {
+    //         TARGET_ADDRESS
+    //     };
 
-    let target_address = if TEST_MODE {
-        TEST_TARGET_ADDRESS
-    } else {
-        TARGET_ADDRESS
-    };
-
+    let mode = "CPU";
     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
         backup_and_clean();
     } else {
@@ -597,10 +617,10 @@ fn run_cpu_solver() {
         let dash_shutdown = shutdown.clone();
         spawn(move || {
             while !dash_shutdown.load(Ordering::Relaxed) {
-                print_dashboard(start, end, global_start, num_threads);
+                print_dashboard(mode, start, end, global_start, num_threads);
                 sleep(Duration::from_secs(2));
             }
-            print_dashboard(start, end, global_start, num_threads);
+            print_dashboard(mode, start, end, global_start, num_threads);
         })
     };
 
@@ -631,7 +651,7 @@ fn run_cpu_solver() {
                     Some(ch)
                 } else if a.next_i < total_keys_u128 {
                     let start_i = a.next_i;
-                    let len = CHUNK_SIZE.min(total_keys_u128 - start_i);
+                    let len = CPU_CHUNK_SIZE.min(total_keys_u128 - start_i);
 
                     a.next_i += len;
 
@@ -657,12 +677,12 @@ fn run_cpu_solver() {
                     break;
                 }
 
-                // Build batch of PARALLEL_KEYS
-                let mut key_bytes_batch = [[0u8; 32]; PARALLEL_KEYS];
-                let mut k_batch = [0u128; PARALLEL_KEYS];
+                // Build batch of CPU_PARALLEL_KEYS
+                let mut key_bytes_batch = [[0u8; 32]; CPU_PARALLEL_KEYS];
+                let mut k_batch = [0u128; CPU_PARALLEL_KEYS];
                 let mut first_k_hex: Option<String> = None;
 
-                let batch_len_u128 = (end_i - i).min(PARALLEL_KEYS as u128);
+                let batch_len_u128 = (end_i - i).min(CPU_PARALLEL_KEYS as u128);
                 let batch_len = batch_len_u128 as usize;
 
                 for p in 0..batch_len {
@@ -692,8 +712,8 @@ fn run_cpu_solver() {
 
                             let h160 = Ripemd160::digest(Sha256::digest(compressed));
 
-                            if h160.as_slice() == target_encoded {
-                                save_found_key(t as u64, &key_bytes, k, target_address.to_string());
+                            if h160.as_slice() == TARGET_ENCODED {
+                                save_found_key(t as u64, &key_bytes, k, TARGET_ADDRESS.to_string());
                                 save_alloc_state(&alloc);
 
                                 shutdown.store(true, Ordering::Relaxed);
@@ -707,7 +727,7 @@ fn run_cpu_solver() {
                 // Exact accounting for partial batches
                 checked += batch_len as u64;
 
-                TOTAL_CHECKED.fetch_add(batch_len as u64, Ordering::Relaxed);
+                add_to_total_checked(batch_len as u128);
 
                 let now = Instant::now();
 
@@ -738,7 +758,7 @@ fn run_cpu_solver() {
                     last_save = now;
                 }
 
-                i += PARALLEL_KEYS as u128;
+                i += CPU_PARALLEL_KEYS as u128;
             }
 
             // Mark chunk finished in the assignment log
@@ -755,7 +775,7 @@ fn run_cpu_solver() {
     shutdown.store(true, Ordering::Relaxed);
     dash_thread.join().unwrap();
 
-    print_dashboard(start, end, global_start, num_threads);
+    print_dashboard(mode, start, end, global_start, num_threads);
 
     if !shutdown.load(Ordering::Relaxed) {
         println!("\nSearch completed across active threads. No key found.");
@@ -763,6 +783,8 @@ fn run_cpu_solver() {
 }
 
 fn run_gpu_solver() {
+    let mode = "GPU";
+
     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
         backup_and_clean();
     } else {
@@ -825,10 +847,10 @@ fn run_gpu_solver() {
         let shutdown = shutdown.clone();
         spawn(move || {
             while !shutdown.load(Ordering::Relaxed) {
-                print_dashboard(start, end, global_start, 1); // 1 = GPU "thread"
+                print_dashboard(mode, start, end, global_start, 1); // 1 = GPU "thread"
                 sleep(Duration::from_secs(2));
             }
-            print_dashboard(start, end, global_start, 1);
+            print_dashboard(mode, start, end, global_start, 1);
         })
     };
 
@@ -858,7 +880,7 @@ fn run_gpu_solver() {
             break;
         }
 
-        TOTAL_CHECKED.fetch_add(chunk.len as u64, Ordering::Relaxed);
+        // add_to_total_checked(batch_len as u128);
         current_i = chunk.start_i + chunk.len;
         save_next_i(current_i);
         append_log_finished(chunk.start_i);
@@ -868,7 +890,7 @@ fn run_gpu_solver() {
 
     // Main search loop
     while current_i < total_keys_u128 && !FOUND.load(Ordering::Relaxed) {
-        let len = CHUNK_SIZE.min(total_keys_u128 - current_i);
+        let len = GPU_CHUNK_SIZE.min(total_keys_u128 - current_i);
         let chunk_start = current_i;
 
         append_log_assigned(chunk_start, len);
@@ -880,7 +902,7 @@ fn run_gpu_solver() {
             break;
         }
 
-        TOTAL_CHECKED.fetch_add(len as u64, Ordering::Relaxed);
+        add_to_total_checked(len);
         current_i += len;
         append_log_finished(chunk_start);
 
@@ -921,13 +943,30 @@ fn update_gpu_dashboard(current_i: u128, checked_this_batch: u64) {
 }
 
 fn save_found_key_gpu(private_key: u128) {
-    let key_hex = format!("{:032x}", private_key);
+    let key_hex = format!("{:064x}", private_key);
+
     let content = format!(
-        "PRIVATE KEY FOUND BY GPU!\nAddress: {}\nPrivate key (hex): {}\nPrivate key (dec): {}\n",
-        TARGET_ADDRESS, key_hex, private_key
+        "PRIVATE KEY FOUND BY GPU!\nAddress: {}\nPrivate key (hex): {}",
+        TARGET_ADDRESS, key_hex
     );
 
     let _ = fs::write(FOUND_FILE, content);
 
-    println!("\n!!! PRIVATE KEY FOUND BY GPU !!!\nHex: {}", key_hex);
+    println!(
+        "\n!!! PRIVATE KEY FOUND BY GPU !!!\nHex: {}\nDec: {}",
+        key_hex, private_key
+    );
+}
+
+fn add_to_total_checked(added: u128) {
+    let added_low = added as u64;
+    let added_high = (added >> 64) as u64;
+
+    let old_low = TOTAL_CHECKED_LOW.fetch_add(added_low, Ordering::Relaxed);
+    let mut carry = if old_low > u64::MAX - added_low { 1 } else { 0 };
+    carry += added_high; // Add high part + any low carry
+
+    if carry > 0 {
+        TOTAL_CHECKED_HIGH.fetch_add(carry, Ordering::Relaxed);
+    }
 }
