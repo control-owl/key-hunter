@@ -501,7 +501,7 @@ fn load_assignment_log_from_path(path: &str) -> (VecDeque<Chunk>, u128) {
         }
     }
 
-    fs::remove_file(&path).ok();
+    fs::remove_file(path).ok();
 
     (pending, farthest_end)
 }
@@ -718,8 +718,6 @@ fn run_cpu_solver() {
                                 save_alloc_state(&alloc);
 
                                 shutdown.store(true, Ordering::Relaxed);
-
-                                return; // exit thread
                             }
                         }
                     });
