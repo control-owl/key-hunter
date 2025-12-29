@@ -11,7 +11,7 @@ namespace ripemd160 {
 }
 
 
-__constant__ int DEBUG_TEST_MODE = 0;
+__constant__ int DEBUG_TEST_MODE = false;
 
 // priv key 1
 // __constant__ uint8_t TARGET_H160[20] = {
@@ -280,17 +280,33 @@ __device__ __forceinline__ uint32_t rotate_left_32(uint32_t value, uint32_t shif
     return (value << shift) | (value >> (32 - shift));
 }
 
-__device__ __forceinline__ uint64_t bit_reverse_71(uint64_t x) {
-    uint64_t r = 0;
+__device__ uint32_t reverse_bits_32(uint32_t v) {
+    return __brev(v);
+}
 
-    #pragma unroll
-    for (int i = 0; i < 71; ++i) {
-        r = (r << 1) | (x & 1);
+__device__ uint64_t reverse_bits_64(uint64_t v) {
+    return __brevll(v);
+}
 
-        x >>= 1;
-    }
+__device__ __uint128_t bit_reverse_71(__uint128_t x) {
+    uint64_t low64 = x & 0xFFFFFFFFFFFFFFFFULL;
+    uint64_t high7 = x >> 64;
 
-    return r;
+    uint64_t rev_low64 = reverse_bits_64(low64);
+
+    uint64_t rev_high7 = 0;
+    rev_high7 |= ((high7 >> 0) & 1) << 6;
+    rev_high7 |= ((high7 >> 1) & 1) << 5;
+    rev_high7 |= ((high7 >> 2) & 1) << 4;
+    rev_high7 |= ((high7 >> 3) & 1) << 3;
+    rev_high7 |= ((high7 >> 4) & 1) << 2;
+    rev_high7 |= ((high7 >> 5) & 1) << 1;
+    rev_high7 |= ((high7 >> 6) & 1) << 0;
+
+    // Combine: high 64 of rev = rev_low64 << 7 bits positionally
+    __uint128_t rev = ((__uint128_t)rev_low64 << 7) | rev_high7;
+
+    return rev;
 }
 
 __device__ bool isZero(const unsigned int a[8]) {
@@ -1103,7 +1119,7 @@ extern "C" __global__ void generate_and_check_keys(
     uint64_t range_start_high, 
     unsigned long long *out_found_index
 ) {
-     const bool debug = DEBUG_TEST_MODE;
+    const bool debug = DEBUG_TEST_MODE;
 
     uint64_t tid    = blockIdx.x * blockDim.x + threadIdx.x;
     uint64_t stride = gridDim.x * blockDim.x;
@@ -1124,27 +1140,35 @@ extern "C" __global__ void generate_and_check_keys(
     // ------------------------------------------------------------------
     #pragma unroll
     for (uint64_t offset = tid; offset < count; offset += stride) {
-
         if (*out_found_index != ULLONG_MAX) return;
 
         __uint128_t i = base_i + offset;
-
         __uint128_t k;
     
         // ======= 0. SEARCH MODE =======
         if (search_mode) {
+            // Sequence
             k = range_start + i;
         } else {
+            // PCG mixing
             __uint128_t a = ((__uint128_t)a_high << 64) | a_low;
             __uint128_t b = ((__uint128_t)b_high << 64) | b_low;
             __uint128_t y = a * i + b;
-    
-            y &= (((__uint128_t)0x7FFFFFFFFFFFFFFFULL << 64) | (__uint128_t)0xFFFFFFFFFFFFFFFFULL);
-    
-            uint64_t y_low = (uint64_t)y;
-            uint64_t x = bit_reverse_71(y_low);
-    
-            k = range_start + x;
+            y &= (((__uint128_t)0x7FULL << 64) | 0xFFFFFFFFFFFFFFFFULL);
+
+            uint64_t high = (uint64_t)(y >> 64);
+            uint64_t low  = (uint64_t)y;
+            low ^= high;
+            low *= 0x9E3779B97F4A7C15ULL;
+            high = ((high << 32) | (low >> 32)) ^ low;
+            high *= 0xBDD1F3B71727E72BULL;
+            y = ((__uint128_t)high << 64) | low;
+            y ^= y >> 67;
+
+            // Bound back to mod 2^71
+            y &= (((__uint128_t)0x7FULL << 64) | 0xFFFFFFFFFFFFFFFFULL);
+
+            k = range_start + y;
         }
     
     
@@ -1156,12 +1180,12 @@ extern "C" __global__ void generate_and_check_keys(
             priv[i] = (k >> (8 * i)) & 0xFF;
         }
     
-        if (debug) {
-            printf("\n--- Processing key index=%llu ---\n", (unsigned long long)(uint64_t)i);
-            printf("Private key (big-endian hex): ");
-            for (int b = 31; b >= 0; b--) printf("%02x", priv[b]);
-            printf("\n");
-        }
+        // if (debug) {
+        //     printf("\n--- Processing key index=%llu ---\n", (unsigned long long)(uint64_t)i);
+        //     printf("Private key (big-endian hex): ");
+        //     for (int b = 31; b >= 0; b--) printf("%02x", priv[b]);
+        //     printf("\n");
+        // }
     
     
         // ======= 2. Public key =======
@@ -1171,11 +1195,11 @@ extern "C" __global__ void generate_and_check_keys(
         uint8_t pub_compressed[33];
         getCompressedPubKey(pub_compressed, pubX, pubY);
     
-        if (debug) {
-            printf("Compressed pubkey: ");
-            for (int b = 0; b < 33; ++b) printf("%02x", pub_compressed[b]);
-            printf("\n");    
-        }
+        // if (debug) {
+        //     printf("Compressed pubkey: ");
+        //     for (int b = 0; b < 33; ++b) printf("%02x", pub_compressed[b]);
+        //     printf("\n");    
+        // }
     
         // ======= 3. SHA256(publicKey) =======
         unsigned int sha_digest[8];
@@ -1194,11 +1218,11 @@ extern "C" __global__ void generate_and_check_keys(
             sha_out[off + 3] =  word        & 0xff;
         }
     
-        if (debug) {
-            printf("SHA256 digest: ");
-            for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
-            printf("\n");
-        }
+        // if (debug) {
+        //     printf("SHA256 digest: ");
+        //     for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
+        //     printf("\n");
+        // }
     
         unsigned int sha_words[8];
     
@@ -1216,12 +1240,12 @@ extern "C" __global__ void generate_and_check_keys(
         unsigned int ripe_words[5];
         ripemd160::ripemd160sha256(sha_words, ripe_words);
     
-        if (debug) {
-            printf("ripe_words (LE words): ");
-            for (int i = 0; i < 5; i++)
-               printf("%08x ", ripe_words[i]);
-            printf("\n");
-        }
+        // if (debug) {
+        //     printf("ripe_words (LE words): ");
+        //     for (int i = 0; i < 5; i++)
+        //        printf("%08x ", ripe_words[i]);
+        //     printf("\n");
+        // }
     
         uint8_t hash160[20];
     
@@ -1236,11 +1260,11 @@ extern "C" __global__ void generate_and_check_keys(
             hash160[off + 3] = (w >> 24) & 0xff;
         }   
     
-        if (debug) {
-            printf("Address hash: ");
-            for (int b = 0; b < 20; ++b) printf("%02x", hash160[b]);
-            printf("\n");
-        }
+        // if (debug) {
+        //     printf("Address hash: ");
+        //     for (int b = 0; b < 20; ++b) printf("%02x", hash160[b]);
+        //     printf("\n");
+        // }
     
     
         // ======= CHECK =======

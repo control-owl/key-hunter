@@ -224,22 +224,36 @@ fn permute_index(i: u128) -> u128 {
     if SEQUENCE_MODE {
         i
     } else {
-        let y = (A_CONST.wrapping_mul(i) + B_CONST) & N_MASK;
-        bit_reverse_71(y)
+        let mut y = A_CONST.wrapping_mul(i).wrapping_add(B_CONST) & N_MASK;
+
+        // PCG mixing (match GPU)
+        let high: u64 = (y >> 64) as u64;
+        let mut low: u64 = y as u64;
+        low ^= high;
+        low = low.wrapping_mul(0x9E3779B97F4A7C15);
+        let mut mixed_high: u64 = ((high << 32) | (low >> 32)) ^ low;
+        mixed_high = mixed_high.wrapping_mul(0xBDD1F3B71727E72B);
+        y = ((mixed_high as u128) << 64) | (low as u128);
+        y ^= y >> 67;
+
+        // Bound back to mod 2^71
+        y &= N_MASK;
+
+        y
     }
 }
 
-#[inline(always)]
-fn bit_reverse_71(mut x: u128) -> u128 {
-    let mut r: u128 = 0;
-
-    for _ in 0..N_BITS {
-        r = (r << 1) | (x & 1);
-        x >>= 1;
-    }
-
-    r
-}
+// #[inline(always)]
+// fn bit_reverse_71(mut x: u128) -> u128 {
+//     let mut r: u128 = 0;
+//
+//     for _ in 0..N_BITS {
+//         r = (r << 1) | (x & 1);
+//         x >>= 1;
+//     }
+//
+//     r
+// }
 
 fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, num_threads: usize) {
     let dash = DASHBOARD.lock().unwrap();
@@ -274,12 +288,12 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
         let status = &dash[t];
         let idx_hex = format!("{:019X}", status.last_i);
         println!(
-            "{} {:2} Index: {} Checked: {:8}K Current key: {} Speed: {:6.1} K/s",
+            "{} {:2} Index: {} Current key: {} Checked: {:8}K Speed: {:6.1} K/s",
             mode,
             t,
             idx_hex,
-            status.checked / 1_000,
             status.key_hex,
+            status.checked / 1_000,
             status.speed_kps
         );
     }
