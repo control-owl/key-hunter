@@ -46,12 +46,12 @@ const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 10
 // which are responsible for executing threads in parallel.
 // The count can vary by GPU architecture and model, affecting the overall performance and
 // processing power of the graphics card.
-const GPU_TEST_MODE: bool = true;
+const GPU_TEST_MODE: bool = false;
 const GPU_SM_COUNT: u32 = 14;
 const GPU_CHUNK_SIZE: u128 = 1024 * GPU_SM_COUNT as u128;
 
 // Search mode: Sequence or LCG
-const SEQUENCE_MODE: bool = true;
+const SEQUENCE_MODE: bool = false;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -174,7 +174,7 @@ impl GpuSolver {
             grid = 1;
         }
 
-        let range_start: u128 = if search_mode { 0u128 } else { RANGE_START };
+        let range_start: u128 = if search_mode { 1u128 } else { RANGE_START };
         let a_val: u128 = A_CONST;
         let b_val: u128 = B_CONST;
 
@@ -599,7 +599,7 @@ fn run_cpu_solver() {
     };
 
     let initial_next_i = if SEQUENCE_MODE {
-        0u128
+        1u128
     } else {
         let next_i_from_file = load_next_i();
         std::cmp::max(farthest_end_from_log, next_i_from_file)
@@ -832,7 +832,7 @@ fn run_gpu_solver() {
     };
 
     let next_i = if SEQUENCE_MODE {
-        0u128
+        1u128
     } else {
         std::cmp::max(farthest, load_next_i()).min(total_keys_u128)
     };
