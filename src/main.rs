@@ -46,12 +46,12 @@ const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 10
 // which are responsible for executing threads in parallel.
 // The count can vary by GPU architecture and model, affecting the overall performance and
 // processing power of the graphics card.
-const GPU_TEST_MODE: bool = false;
+const GPU_TEST_MODE: bool = true;
 const GPU_SM_COUNT: u32 = 14;
 const GPU_CHUNK_SIZE: u128 = 1024 * GPU_SM_COUNT as u128;
 
 // Search mode: Sequence or LCG
-const SEQUENCE_MODE: bool = false;
+const SEQUENCE_MODE: bool = true;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -242,18 +242,6 @@ fn permute_index(i: u128) -> u128 {
         y
     }
 }
-
-// #[inline(always)]
-// fn bit_reverse_71(mut x: u128) -> u128 {
-//     let mut r: u128 = 0;
-//
-//     for _ in 0..N_BITS {
-//         r = (r << 1) | (x & 1);
-//         x >>= 1;
-//     }
-//
-//     r
-// }
 
 fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, num_threads: usize) {
     let dash = DASHBOARD.lock().unwrap();
