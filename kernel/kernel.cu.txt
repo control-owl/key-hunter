@@ -1328,12 +1328,14 @@ __device__ __forceinline__ void jacobianAddG(JacobianPoint &P) {
     SMP(Y3, Y1HHH, Y3);
 
     // Z3
+    // MMP(P.Z, H, P.Z);
     unsigned int Z3[8];
     MMP(P.Z, H, Z3);
-    
+    copyInt(Z3, P.Z);
+
+    // Correct order for your copyInt
     copyInt(X3, P.X);
     copyInt(Y3, P.Y);
-    copyInt(Z3, P.Z);
 }
 
 __device__ __forceinline__ void jacobian_to_affine(const JacobianPoint &P, unsigned int outX[8], unsigned int outY[8]) {
