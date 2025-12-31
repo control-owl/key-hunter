@@ -1047,7 +1047,7 @@ __device__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8],
             bool bit = (byte >> bit_idx) & 1;
             if (bit) {
                 unsigned int tempX[8], tempY[8], tempZ[8];
-                jacobianMixedAdd(tempX, tempY, tempZ, X, Y, Z, _X_CONSTANT, _Y_CONSTANT);
+                jacobianMixedAdd(tempX, tempY, tempZ, X, Y, Z, PRECOMP_X[1], PRECOMP_Y[1]);
                 copyInt(tempX, X);
                 copyInt(tempY, Y);
                 copyInt(tempZ, Z);
@@ -1275,6 +1275,82 @@ __device__ void getCompressedPubKey(uint8_t *output, const unsigned int x[8], co
 
 // NEW fart
 
+// Working 1-3G
+// __device__ __forceinline__ void jacobianAddG(JacobianPoint &P) {
+//     unsigned int ZZ[8];
+//     MMP(P.Z, P.Z, ZZ);
+// 
+//     unsigned int U2[8];
+//     MMP(PRECOMP_X[1], ZZ, U2);
+// 
+//     unsigned int ZZZ[8];
+//     MMP(ZZ, P.Z, ZZZ);
+// 
+//     unsigned int S2[8];
+//     MMP(PRECOMP_Y[1], ZZZ, S2);
+// 
+//     unsigned int H[8];
+//     SMP(U2, P.X, H);
+// 
+//     // printf("H: ");
+//     // for (int i=7; i>=0; --i) printf("%08x", H[i]);
+//     // printf("\n");
+// 
+//     if (isZero(H)) {
+//         // fallback to affine double using precomp[2]
+//         copyInt(PRECOMP_X[2], P.X);
+//         copyInt(PRECOMP_Y[2], P.Y);
+//         copyInt(_1_CONSTANT, P.Z);
+//         return;
+//     }
+// 
+//     unsigned int HH[8];
+//     MMP(H, H, HH);
+// 
+//     unsigned int HHH[8];
+//     MMP(HH, H, HHH);
+// 
+//     unsigned int V[8];
+//     MMP(P.X, HH, V);
+// 
+//     unsigned int r[8];
+//     SMP(S2, P.Y, r);
+// 
+//     // X3
+//     unsigned int X3[8];
+//     MMP(r, r, X3);
+//     SMP(X3, HHH, X3);
+//     unsigned int twoV[8];
+//     AMP(V, V, twoV);
+//     SMP(X3, twoV, X3);
+// 
+//     // Y3 = r * (V - X3) - P.Y * (H * 4 * HH)
+//     // or Y3 = r * (V - X3) - P.Y * 4 * H^3
+//     unsigned int Y3[8];
+//     SMP(V, X3, Y3);
+//     MMP(r, Y3, Y3);
+//     unsigned int Y1HHH[8];
+//     MMP(P.Y, HHH, Y1HHH);
+//     AMP(Y1HHH, Y1HHH, Y1HHH);  // Y1HHH = 2 * Y1HHH
+//     AMP(Y1HHH, Y1HHH, Y1HHH);  // Y1HHH = 4 * Y1HHH
+//     SMP(Y3, Y1HHH, Y3);
+// 
+//     printf("Bad r * (V - X3): ");
+//     for (int i=7; i>=0; --i) printf("%08x", Y3[i]);  // this is the wrong one currently
+//     printf("\n");
+// 
+//     // Z3
+//     unsigned int Z3[8];
+//     MMP(P.Z, H, Z3);
+//     
+// 
+//     copyInt(X3, P.X);
+//     copyInt(Y3, P.Y);
+//     copyInt(Z3, P.Z);
+// }
+
+// FUCKING WORKING !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// HAPPY NEW YEAR
 __device__ __forceinline__ void jacobianAddG(JacobianPoint &P) {
     unsigned int ZZ[8];
     MMP(P.Z, P.Z, ZZ);
@@ -1319,22 +1395,39 @@ __device__ __forceinline__ void jacobianAddG(JacobianPoint &P) {
     AMP(V, V, twoV);
     SMP(X3, twoV, X3);
 
-    // Y3
-    unsigned int Y3[8];
-    SMP(V, X3, Y3);
-    MMP(r, Y3, Y3);
+    // Y3 – the important fix is here
+    unsigned int temp[8];               // V - X3
+    unsigned int Y3[8];    
+    SMP(V, X3, temp);
+    MMP(r, temp, Y3);                   // Y3 = r * (V - X3)
+
     unsigned int Y1HHH[8];
-    MMP(P.Y, HHH, Y1HHH);
-    SMP(Y3, Y1HHH, Y3);
+    MMP(P.Y, HHH, Y1HHH);               // Y1 * H^3
+
+    // Compute -Y1HHH mod p
+    unsigned int negY1HHH[8];
+    if (isZero(Y1HHH)) {
+        // -0 = 0
+        // set all limbs to 0
+        #pragma unroll
+        for (int i = 0; i < 8; ++i) negY1HHH[i] = 0u;
+    } else {
+        // -Y1HHH = p - Y1HHH
+        SMP(MODULUS_P, Y1HHH, negY1HHH);
+    }
+
+    // Y3 = r*(V - X3) + (-Y1HHH)  mod p
+    AMP(Y3, negY1HHH, Y3);
 
     // Z3
     unsigned int Z3[8];
     MMP(P.Z, H, Z3);
-    
+
     copyInt(X3, P.X);
     copyInt(Y3, P.Y);
     copyInt(Z3, P.Z);
 }
+
 
 __device__ __forceinline__ void jacobian_to_affine(const JacobianPoint &P, unsigned int outX[8], unsigned int outY[8]) {
     // Zinv = Z^-1
@@ -1421,7 +1514,7 @@ extern "C" __global__ void generate_and_check_keys(
 
     __uint128_t current_k;
     if (search_mode) {
-        current_k = 0 + i0;  // sequence: start exactly at range_start
+        current_k = i0;  // sequence: start exactly at range_start
     } else {
         current_k = compute_private_key(false, i0, range_start, a_low, a_high, b_low, b_high);  // PCG: permute i0
     }
@@ -1439,7 +1532,7 @@ extern "C" __global__ void generate_and_check_keys(
     if (debug) {
         printf("\n--- Thread tid=%llu processing starting index i0=%llu ---\n",
                (unsigned long long)tid, (unsigned long long)i0);
-        printf("Starting private key (dec): %llu\n", (unsigned long long)current_k);
+        printf("Private key (dec): %llu\n", (unsigned long long)current_k);
         printf("Private key (hex BE): ");
         for (int b = 31; b >= 0; --b) printf("%02x", priv[b]);
         printf("\n");
@@ -1453,11 +1546,11 @@ extern "C" __global__ void generate_and_check_keys(
     uint8_t pub_compressed[33];
     getCompressedPubKey(pub_compressed, pubX, pubY);
 
-    if (debug) {
-        printf("Compressed pubkey: ");
-        for (int b = 0; b < 33; ++b) printf("%02x", pub_compressed[b]);
-        printf("\n");
-    }
+    // if (debug) {
+    //     printf("Compressed pubkey: ");
+    //     for (int b = 0; b < 33; ++b) printf("%02x", pub_compressed[b]);
+    //     printf("\n");
+    // }
 
     // ======= 3. Add to jacob cords =======
     JacobianPoint P;
@@ -1465,12 +1558,6 @@ extern "C" __global__ void generate_and_check_keys(
     copyInt(pubY, P.Y);
     copyInt(_1_CONSTANT, P.Z);
     
-    // // Set Z = 1 manually
-    // #pragma unroll
-    // for (int i = 0; i < 8; ++i) {
-    //     P.Z[i] = (i == 0) ? 1u : 0u;
-    // }
-
 
     for (uint32_t j = 0; j < KEYS_PER_THREAD; ++j) {
         __uint128_t current_index = i0 + j;
@@ -1501,8 +1588,9 @@ extern "C" __global__ void generate_and_check_keys(
 
         uint8_t temp_comp[33];
         getCompressedPubKey(temp_comp, affX, affY);
+        
         if (debug) {
-            printf("  Point %llu compressed: ", (unsigned long long)(current_k + j));
+            printf("Point %llu compressed: ", (unsigned long long)(current_k + j));
             for (int b = 0; b < 33; ++b) printf("%02x", temp_comp[b]);
             printf("\n");
         }
