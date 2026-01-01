@@ -1568,7 +1568,7 @@ extern "C" __global__ void generate_and_check_keys(
         unsigned int affX[8], affY[8];
         jacobian_to_affine(P, affX, affY);
         
-        unsigned int yParity = affY[0] & 1u;
+        unsigned int yParity = affY[7] & 1u;
 
         // ======= 2. Public key =======
         unsigned int sha_digest[8];
@@ -1596,9 +1596,9 @@ extern "C" __global__ void generate_and_check_keys(
         }
 
         if (debug) {
-            printf("SHA256 digest: ");
+            printf("SHA256 digest:      ");
             for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
-            printf("\n");
+            printf("\n\n");
         }
 
         if (j + 1 < KEYS_PER_THREAD) {
