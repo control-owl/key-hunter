@@ -22,7 +22,7 @@ namespace ripemd160 {
 // ==================================================================================================
 
 
-__constant__ bool DEBUG_TEST_MODE = true;
+__constant__ bool DEBUG_TEST_MODE = false;
 
 // priv key 1
 // __constant__ uint8_t TARGET_H160[20] = {
@@ -37,10 +37,10 @@ __constant__ bool DEBUG_TEST_MODE = true;
 // };
 
 // Private key decimal 1_000
-__constant__ uint8_t TARGET_H160[20] = {
-    0x46, 0xce, 0xee, 0xd7, 0x97, 0xcd, 0x8c, 0x7b, 0x6e, 0x7f,
-    0x52, 0x1b, 0x07, 0x5a, 0xd2, 0xfb, 0x1e, 0x5d, 0x7e, 0x42
-};
+// __constant__ uint8_t TARGET_H160[20] = {
+//     0x46, 0xce, 0xee, 0xd7, 0x97, 0xcd, 0x8c, 0x7b, 0x6e, 0x7f,
+//     0x52, 0x1b, 0x07, 0x5a, 0xd2, 0xfb, 0x1e, 0x5d, 0x7e, 0x42
+// };
 
 // Private key decimal 10_000
 // __constant__ uint8_t TARGET_H160[20] = {
@@ -61,10 +61,10 @@ __constant__ uint8_t TARGET_H160[20] = {
 // };
 
 // Puzzle #72 priv key?
-// __constant__ uint8_t TARGET_H160[20] = {
-//     0xbf, 0x74, 0x13, 0xe8, 0xdf, 0x4e, 0x7a, 0x34, 0xce, 0x9d,
-//     0xc1, 0x3e, 0x2f, 0x26, 0x48, 0x78, 0x3e, 0xc5, 0x4a, 0xdb
-// };
+__constant__ uint8_t TARGET_H160[20] = {
+    0xbf, 0x74, 0x13, 0xe8, 0xdf, 0x4e, 0x7a, 0x34, 0xce, 0x9d,
+    0xc1, 0x3e, 0x2f, 0x26, 0x48, 0x78, 0x3e, 0xc5, 0x4a, 0xdb
+};
 
 
 // ==================================================================================================
@@ -340,7 +340,7 @@ __constant__ unsigned int PRECOMP_Y[64][8] = {
 //     return r;
 // }
 
-__device__ bool isZero(const unsigned int a[8]) {
+__device__ __forceinline__ bool isZero(const unsigned int a[8]) {
     #pragma unroll
     for (int i = 0; i < 8; i++) {
         if (a[i] != 0u) return false;
@@ -349,7 +349,7 @@ __device__ bool isZero(const unsigned int a[8]) {
     return true;
 }
 
-__device__ void setZero(unsigned int a[8]) {
+__device__ __forceinline__ void setZero(unsigned int a[8]) {
     #pragma unroll
     for (int i = 0; i < 8; i++) a[i] = 0;
 }
@@ -382,7 +382,7 @@ __device__ __forceinline__ bool areAllWordsMaxUInt32(const unsigned int words[8]
     return allMax;
 }
 
-__device__ bool isGreaterOrEqual(const unsigned int a[8], const unsigned int b[8]) {
+__device__ __forceinline__ bool isGreaterOrEqual(const unsigned int a[8], const unsigned int b[8]) {
     #pragma unroll
     for (int i = 0; i < 8; i++) {
         if (a[7-i] > b[7-i]) return true;
@@ -397,7 +397,7 @@ __device__ bool isGreaterOrEqual(const unsigned int a[8], const unsigned int b[8
 // ==================================================================================================
 
 
-__device__ unsigned int rawSub(unsigned int result[8], const unsigned int lhs[8], const unsigned int rhs[8]) {
+__device__ __forceinline__ unsigned int rawSub(unsigned int result[8], const unsigned int lhs[8], const unsigned int rhs[8]) {
     PTX_SUB_CC(result[7], lhs[7], rhs[7]);
     PTX_SUBC_CC(result[6], lhs[6], rhs[6]);
     PTX_SUBC_CC(result[5], lhs[5], rhs[5]);
@@ -413,7 +413,7 @@ __device__ unsigned int rawSub(unsigned int result[8], const unsigned int lhs[8]
     return borrowOut;
 }
 
-__device__ void rawAdd(unsigned int result[8], const unsigned int lhs[8], const unsigned int rhs[8]) {
+__device__ __forceinline__ void rawAdd(unsigned int result[8], const unsigned int lhs[8], const unsigned int rhs[8]) {
     PTX_ADD_CC(result[7], lhs[7], rhs[7]);
     PTX_ADDC_CC(result[6], lhs[6], rhs[6]);
     PTX_ADDC_CC(result[5], lhs[5], rhs[5]);
@@ -833,7 +833,7 @@ __device__ static void IMP(unsigned int value[8]) {
 // ==================================================================================================
 
 
-__device__ void jacobianDouble(
+__device__ __forceinline__ void jacobianDouble(
     unsigned int X3[8],
     unsigned int Y3[8],
     unsigned int Z3[8],
@@ -893,7 +893,7 @@ __device__ void jacobianDouble(
     AMP(Z3, Z3, Z3);
 }
 
-__device__ void jacobianAdd(
+__device__ __forceinline__ void jacobianAdd(
     unsigned int X3[8],
     unsigned int Y3[8],
     unsigned int Z3[8],
@@ -968,7 +968,7 @@ __device__ void jacobianAdd(
     copyInt(tmp_z, Z3);
 }
 
-__device__ void jacobianMixedAdd(
+__device__ __forceinline__ void jacobianMixedAdd(
     unsigned int X3[8],
     unsigned int Y3[8],
     unsigned int Z3[8],
@@ -1025,7 +1025,7 @@ __device__ void jacobianMixedAdd(
 // ==================================================================================================
 
 
-__device__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8], const uint8_t scalar[32]) {
+__device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8], const uint8_t scalar[32]) {
     // Initialize point to generator point in Jacobian coordinates
     unsigned int X[8], Y[8], Z[8];
     setZero(X);
@@ -1074,7 +1074,7 @@ __device__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8],
     MMP(temp, inv_z, pubY); // y = Y / Z³
 }
 
-__device__ void getCompressedPubKey(uint8_t *output, const unsigned int x[8], const unsigned int y[8]) {
+__device__ __forceinline__ void getCompressedPubKey(uint8_t *output, const unsigned int x[8], const unsigned int y[8]) {
     // HSB
     output[0] = (y[7] & 1u) ? 0x03u : 0x02u;
     for (int i = 0; i < 8; ++i) {
@@ -1087,270 +1087,6 @@ __device__ void getCompressedPubKey(uint8_t *output, const unsigned int x[8], co
     }
 }
 
-// WORKING version
-// extern "C" __global__ void generate_and_check_keys(
-//     bool search_mode,
-//     uint64_t start_i_low, 
-//     uint64_t start_i_high, 
-//     uint64_t count, 
-//     uint64_t a_low, 
-//     uint64_t a_high, 
-//     uint64_t b_low, 
-//     uint64_t b_high, 
-//     uint64_t range_start_low, 
-//     uint64_t range_start_high, 
-//     unsigned long long *out_found_index
-// ) {
-//     const bool debug = DEBUG_TEST_MODE;
-// 
-//     uint64_t tid    = blockIdx.x * blockDim.x + threadIdx.x;
-//     uint64_t stride = gridDim.x * blockDim.x;
-// 
-//     // ------------------------------------------------------------------
-//     // DEBUG MODE: force only thread 0 in block 0 to run (single key)
-//     // ------------------------------------------------------------------
-//     if (debug) {
-//         tid    = 0;                     // only this virtual thread runs
-//         stride = 1;                     // no striding → processes offset 0 only
-//     }
-// 
-//     __uint128_t base_i      = ((__uint128_t)start_i_high << 64) | start_i_low;
-//     __uint128_t range_start = ((__uint128_t)range_start_high << 64) | range_start_low;
-// 
-//     // ------------------------------------------------------------------
-//     // Main loop – identical behaviour in both modes
-//     // ------------------------------------------------------------------
-//     #pragma unroll
-//     for (uint64_t offset = tid; offset < count; offset += stride) {
-// 
-//         if (*out_found_index != ULLONG_MAX) return;
-// 
-//         __uint128_t i = base_i + offset;
-// 
-//         __uint128_t k;
-//     
-//         // ======= 0. SEARCH MODE =======
-//         if (search_mode) {
-//             k = range_start + i;
-//         } else {
-//             // PCG mixing
-//             __uint128_t a = ((__uint128_t)a_high << 64) | a_low;
-//             __uint128_t b = ((__uint128_t)b_high << 64) | b_low;
-//             __uint128_t y = a * i + b;
-//             y &= (((__uint128_t)0x7FULL << 64) | 0xFFFFFFFFFFFFFFFFULL);
-// 
-//             uint64_t high = (uint64_t)(y >> 64);
-//             uint64_t low  = (uint64_t)y;
-//             low ^= high;
-//             low *= 0x9E3779B97F4A7C15ULL;
-//             high = ((high << 32) | (low >> 32)) ^ low;
-//             high *= 0xBDD1F3B71727E72BULL;
-//             y = ((__uint128_t)high << 64) | low;
-//             y ^= y >> 67;
-// 
-//             // Bound back to mod 2^71
-//             y &= (((__uint128_t)0x7FULL << 64) | 0xFFFFFFFFFFFFFFFFULL);
-// 
-//             k = range_start + y;
-//         }
-//     
-//     
-//         // ======= 1. Private key =======
-//         uint8_t priv[32] = {0};
-//         
-//         #pragma unroll
-//         for (int i = 0; i < 32; ++i) {
-//             priv[i] = (k >> (8 * i)) & 0xFF;
-//         }
-//     
-//         if (debug) {
-//             printf("\n--- Processing key index=%llu ---\n", (unsigned long long)(uint64_t)i);
-//             printf("Private key (big-endian hex): ");
-//             for (int b = 31; b >= 0; b--) printf("%02x", priv[b]);
-//             printf("\n");
-//         }
-//     
-//     
-//         // ======= 2. Public key =======
-//         unsigned int pubX[8], pubY[8];
-//         scalarMultiplication(pubX, pubY, priv);
-//     
-//         uint8_t pub_compressed[33];
-//         getCompressedPubKey(pub_compressed, pubX, pubY);
-//     
-//         if (debug) {
-//             printf("Compressed pubkey: ");
-//             for (int b = 0; b < 33; ++b) printf("%02x", pub_compressed[b]);
-//             printf("\n");    
-//         }
-//     
-//         // ======= 3. SHA256(publicKey) =======
-//         unsigned int sha_digest[8];
-//         unsigned int yParity = (pub_compressed[0] == 0x03) ? 1 : 0;
-//         sha256::sha256PublicKeyCompressed(pubX, yParity, sha_digest);
-//     
-//         uint8_t sha_out[32];
-//     
-//         #pragma unroll
-//         for (int i = 0; i < 8; ++i) {
-//             uint32_t word = sha_digest[i];
-//             int off = i * 4;
-//             sha_out[off + 0] = (word >> 24) & 0xff;
-//             sha_out[off + 1] = (word >> 16) & 0xff;
-//             sha_out[off + 2] = (word >>  8) & 0xff;
-//             sha_out[off + 3] =  word        & 0xff;
-//         }
-//     
-//         if (debug) {
-//             printf("SHA256 digest: ");
-//             for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
-//             printf("\n");
-//         }
-//     
-//         unsigned int sha_words[8];
-//     
-//         #pragma unroll
-//         for (int i = 0; i < 8; ++i) {
-//             int off = i * 4;
-//             sha_words[i] =
-//                 (uint32_t)sha_out[off + 0] |
-//                 (uint32_t)sha_out[off + 1] << 8 |
-//                 (uint32_t)sha_out[off + 2] << 16 |
-//                 (uint32_t)sha_out[off + 3] << 24;
-//         }
-//         
-//         // ======= 4. RIPEMD160(SHA256) =======
-//         unsigned int ripe_words[5];
-//         ripemd160::ripemd160sha256(sha_words, ripe_words);
-//     
-//         if (debug) {
-//             printf("ripe_words (LE words): ");
-//             for (int i = 0; i < 5; i++)
-//                printf("%08x ", ripe_words[i]);
-//             printf("\n");
-//         }
-//     
-//         uint8_t hash160[20];
-//     
-//         #pragma unroll
-//         for (int i = 0; i < 5; ++i) {
-//             uint32_t w = ripe_words[i];
-//             int off = i * 4;
-//     
-//             hash160[off + 0] =  w        & 0xff;
-//             hash160[off + 1] = (w >>  8) & 0xff;
-//             hash160[off + 2] = (w >> 16) & 0xff;
-//             hash160[off + 3] = (w >> 24) & 0xff;
-//         }   
-//     
-//         if (debug) {
-//             printf("Address hash: ");
-//             for (int b = 0; b < 20; ++b) printf("%02x", hash160[b]);
-//             printf("\n");
-//         }
-//     
-//     
-//         // ======= CHECK =======
-//         bool match = true;
-//         #pragma unroll
-//         for (int j = 0; j < 20; ++j) {
-//             if (hash160[j] != TARGET_H160[j]) {
-//                 match = false;
-//                 break;
-//             }
-//         }
-//     
-//     
-//         // ======= CONGRATULATION =======
-//         if (match) {
-//             atomicExch(out_found_index, i);
-//             return;
-//         }
-//     }
-// 
-// }
-
-
-
-
-// NEW fart
-
-// Working 1-3G
-// __device__ __forceinline__ void jacobianAddG(JacobianPoint &P) {
-//     unsigned int ZZ[8];
-//     MMP(P.Z, P.Z, ZZ);
-// 
-//     unsigned int U2[8];
-//     MMP(PRECOMP_X[1], ZZ, U2);
-// 
-//     unsigned int ZZZ[8];
-//     MMP(ZZ, P.Z, ZZZ);
-// 
-//     unsigned int S2[8];
-//     MMP(PRECOMP_Y[1], ZZZ, S2);
-// 
-//     unsigned int H[8];
-//     SMP(U2, P.X, H);
-// 
-//     // printf("H: ");
-//     // for (int i=7; i>=0; --i) printf("%08x", H[i]);
-//     // printf("\n");
-// 
-//     if (isZero(H)) {
-//         // fallback to affine double using precomp[2]
-//         copyInt(PRECOMP_X[2], P.X);
-//         copyInt(PRECOMP_Y[2], P.Y);
-//         copyInt(_1_CONSTANT, P.Z);
-//         return;
-//     }
-// 
-//     unsigned int HH[8];
-//     MMP(H, H, HH);
-// 
-//     unsigned int HHH[8];
-//     MMP(HH, H, HHH);
-// 
-//     unsigned int V[8];
-//     MMP(P.X, HH, V);
-// 
-//     unsigned int r[8];
-//     SMP(S2, P.Y, r);
-// 
-//     // X3
-//     unsigned int X3[8];
-//     MMP(r, r, X3);
-//     SMP(X3, HHH, X3);
-//     unsigned int twoV[8];
-//     AMP(V, V, twoV);
-//     SMP(X3, twoV, X3);
-// 
-//     // Y3 = r * (V - X3) - P.Y * (H * 4 * HH)
-//     // or Y3 = r * (V - X3) - P.Y * 4 * H^3
-//     unsigned int Y3[8];
-//     SMP(V, X3, Y3);
-//     MMP(r, Y3, Y3);
-//     unsigned int Y1HHH[8];
-//     MMP(P.Y, HHH, Y1HHH);
-//     AMP(Y1HHH, Y1HHH, Y1HHH);  // Y1HHH = 2 * Y1HHH
-//     AMP(Y1HHH, Y1HHH, Y1HHH);  // Y1HHH = 4 * Y1HHH
-//     SMP(Y3, Y1HHH, Y3);
-// 
-//     printf("Bad r * (V - X3): ");
-//     for (int i=7; i>=0; --i) printf("%08x", Y3[i]);  // this is the wrong one currently
-//     printf("\n");
-// 
-//     // Z3
-//     unsigned int Z3[8];
-//     MMP(P.Z, H, Z3);
-//     
-// 
-//     copyInt(X3, P.X);
-//     copyInt(Y3, P.Y);
-//     copyInt(Z3, P.Z);
-// }
-
-// FUCKING WORKING !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-// HAPPY NEW YEAR
 __device__ __forceinline__ void jacobianAddG(JacobianPoint &P) {
     unsigned int ZZ[8];
     MMP(P.Z, P.Z, ZZ);
@@ -1428,7 +1164,6 @@ __device__ __forceinline__ void jacobianAddG(JacobianPoint &P) {
     copyInt(Z3, P.Z);
 }
 
-
 __device__ __forceinline__ void jacobian_to_affine(const JacobianPoint &P, unsigned int outX[8], unsigned int outY[8]) {
     // Zinv = Z^-1
     unsigned int Zinv[8];
@@ -1493,10 +1228,9 @@ extern "C" __global__ void generate_and_check_keys(
     unsigned long long *out_found_index
 ) {
     const bool debug = DEBUG_TEST_MODE;
-    constexpr uint32_t KEYS_PER_THREAD = 10;
+    constexpr uint32_t KEYS_PER_THREAD = 1;
 
     uint64_t tid    = blockIdx.x * blockDim.x + threadIdx.x;
-    // uint64_t stride = gridDim.x * blockDim.x;
 
     // ------------------------------------------------------------------
     // DEBUG MODE: force only thread 0 in block 0 to run (single key)
@@ -1518,8 +1252,6 @@ extern "C" __global__ void generate_and_check_keys(
     } else {
         current_k = compute_private_key(false, i0, range_start, a_low, a_high, b_low, b_high);  // PCG: permute i0
     }
-
-
 
     // ======= 1. Private key =======
     uint8_t priv[32] = {0};
@@ -1568,9 +1300,10 @@ extern "C" __global__ void generate_and_check_keys(
         unsigned int affX[8], affY[8];
         jacobian_to_affine(P, affX, affY);
         
+        // unsigned int yParity = (P.Y[7] & 1u) ^ (P.Z[7] & 1u);
         unsigned int yParity = affY[7] & 1u;
 
-        // ======= 2. Public key =======
+        // ======= 4. SHA256 =======
         unsigned int sha_digest[8];
         sha256::sha256PublicKeyCompressed(affX, yParity, sha_digest);
 
@@ -1589,23 +1322,83 @@ extern "C" __global__ void generate_and_check_keys(
         uint8_t temp_comp[33];
         getCompressedPubKey(temp_comp, affX, affY);
         
-        if (debug) {
-            printf("Point %llu compressed: ", (unsigned long long)(current_k + j));
-            for (int b = 0; b < 33; ++b) printf("%02x", temp_comp[b]);
-            printf("\n");
+        // if (debug) {
+        //     printf("Point %llu compressed: ", (unsigned long long)(current_k + j));
+        //     for (int b = 0; b < 33; ++b) printf("%02x", temp_comp[b]);
+        //     printf("\n");
+        // }
+
+        // if (debug) {
+        //     printf("SHA256 digest:      ");
+        //     for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
+        //     printf("\n\n");
+        // }
+
+        unsigned int sha_words[8];
+    
+        #pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            int off = i * 4;
+            sha_words[i] =
+                (uint32_t)sha_out[off + 0] |
+                (uint32_t)sha_out[off + 1] << 8 |
+                (uint32_t)sha_out[off + 2] << 16 |
+                (uint32_t)sha_out[off + 3] << 24;
         }
 
-        if (debug) {
-            printf("SHA256 digest:      ");
-            for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
-            printf("\n\n");
+
+        // ======= 5. RIPEMD160 =======
+        unsigned int ripe_words[5];
+        ripemd160::ripemd160sha256(sha_words, ripe_words);
+    
+        // if (debug) {
+        //     printf("ripe_words (LE words): ");
+        //     for (int i = 0; i < 5; i++)
+        //        printf("%08x ", ripe_words[i]);
+        //     printf("\n");
+        // }
+    
+        uint8_t hash160[20];
+    
+        #pragma unroll
+        for (int i = 0; i < 5; ++i) {
+            uint32_t w = ripe_words[i];
+            int off = i * 4;
+    
+            hash160[off + 0] =  w        & 0xff;
+            hash160[off + 1] = (w >>  8) & 0xff;
+            hash160[off + 2] = (w >> 16) & 0xff;
+            hash160[off + 3] = (w >> 24) & 0xff;
+        }   
+    
+        // if (debug) {
+        //     printf("Address hash: ");
+        //     for (int b = 0; b < 20; ++b) printf("%02x", hash160[b]);
+        //     printf("\n");
+        // }
+    
+    
+        // ======= CHECK =======
+        bool match = true;
+        #pragma unroll
+        for (int k = 0; k < 20; ++k) {
+            if (hash160[k] != TARGET_H160[k]) {
+                match = false;
+                break;
+            }
+        }
+    
+    
+        // ======= CONGRATULATION =======
+        if (match) {
+            atomicExch(out_found_index, (unsigned long long)(current_k + j));
+            return;
         }
 
         if (j + 1 < KEYS_PER_THREAD) {
             jacobianAddG(P);
         }
-
     }
-
-
 }
+
+

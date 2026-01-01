@@ -46,9 +46,11 @@ const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 10
 // which are responsible for executing threads in parallel.
 // The count can vary by GPU architecture and model, affecting the overall performance and
 // processing power of the graphics card.
-const GPU_TEST_MODE: bool = true;
+const GPU_TEST_MODE: bool = false;
 const GPU_SM_COUNT: u32 = 14;
 const GPU_CHUNK_SIZE: u128 = 1024 * GPU_SM_COUNT as u128;
+const GPU_BLOCK_SIZE: u32 = 256;
+const GPU_GRID_SIZE: u32 = GPU_SM_COUNT * 8;
 
 // Search mode: Sequence or LCG
 const SEQUENCE_MODE: bool = true;
@@ -166,8 +168,8 @@ impl GpuSolver {
         let func = self.module.get_function("generate_and_check_keys")?;
 
         let search_mode = SEQUENCE_MODE;
-        let mut block = 256;
-        let mut grid = GPU_SM_COUNT * 8;
+        let mut block = GPU_BLOCK_SIZE;
+        let mut grid = GPU_GRID_SIZE;
 
         if GPU_TEST_MODE {
             block = 1;
