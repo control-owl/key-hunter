@@ -10,6 +10,9 @@ const TARGET_ENCODED: [u8; 20] = [
     191, 116, 19, 232, 223, 78, 122, 52, 206, 157, 193, 62, 47, 38, 72, 120, 62, 197, 74, 219,
 ];
 
+// Search mode: Sequence or PCG
+const SEQUENCE_MODE: bool = false;
+
 // Define only the start and the bit-size; derive end at runtime
 const RANGE_START: u128 = 0x800000000000000000;
 const N_BITS: u32 = 71;
@@ -23,6 +26,8 @@ const N_MASK: u128 = (1u128 << N_BITS) - 1;
 const A_CONST: u128 = 0x9E3779B97F4A7C15u128;
 const B_CONST: u128 = 0x1D3F84A5B7C29E3u128;
 
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
+
 // Paths & persistence
 const BACKUPS_DIR: &str = "backups";
 const STATUS_DIR: &str = "status";
@@ -34,26 +39,46 @@ const ALLOC_LOG_FILE: &str = "status/ALLOC.log"; // assignment log
 const DASHBOARD_UPDATE_INTERVAL_MS: u128 = 500; // per-thread display update
 const PROGRESS_SAVE_INTERVAL_SEC: u64 = 5; // per-thread checkpoint
 
-// Batch parallelization inside a thread iteration
-// Tune CPU_PARALLEL_KEYS to your CPU cache; 64 is a good default
-const CPU_PARALLEL_KEYS: usize = 64;
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
+// Batch parallelization inside a thread iteration
+const CPU_PARALLEL_KEYS: usize = 64;
 // Chunk size claimed atomically per assignment. Larger chunks reduce allocator contention
 // but increase potential rework on crash; we use assignment log to avoid skips.
 const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
 
-// SM count refers to the number of Streaming Multiprocessors in a GPU,
-// which are responsible for executing threads in parallel.
-// The count can vary by GPU architecture and model, affecting the overall performance and
-// processing power of the graphics card.
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
+
 const GPU_TEST_MODE: bool = false;
-const GPU_SM_COUNT: u32 = 14;
-const GPU_CHUNK_SIZE: u128 = 1024 * GPU_SM_COUNT as u128;
-const GPU_BLOCK_SIZE: u32 = 256;
+const GPU_PARALLEL_KEYS: u64 = 4;
+// Host (CPU)
+//  └── GPU_CHUNK_SIZE   ← how much work you give the GPU per launch
+//       └── GRID        ← how many blocks exist concurrently
+//            └── BLOCK  ← how many threads cooperate per block
+//                 └── GPU_PARALLEL_KEYS ← how much work each thread does
+
+// Number of Streaming Multiprocessors (SMs) available on the GPU.
+// Each SM executes multiple warps concurrently and represents a unit of parallel execution.
+// This value is hardware-specific and directly impacts total parallel throughput.
+const GPU_SM_COUNT: u32 = 16; // NVIDIA GeForce GTX 1650 Mobile
+
+// Total number of keys processed by the GPU in a single kernel launch.
+// Larger values reduce kernel launch and synchronization overhead,
+// but excessively large chunks can distort benchmarks and increase latency.
+// This value should be large enough to amortize overhead, but small enough
+// to complete within a few seconds for accurate throughput measurement.
+const GPU_CHUNK_SIZE: u128 = 1024 * 12 * GPU_SM_COUNT as u128;
+
+// Total number of CUDA blocks launched per kernel.
+// Should be a multiple of the SM count to ensure full device saturation.
+// Increasing beyond SM saturation provides no additional performance benefit.
 const GPU_GRID_SIZE: u32 = GPU_SM_COUNT * 8;
 
-// Search mode: Sequence or LCG
-const SEQUENCE_MODE: bool = true;
+// Number of threads per CUDA block.
+// Must be a multiple of 32 (warp size).
+// Controls occupancy, register pressure, and SM utilization.
+// Values between 128 and 256 provide the best balance for EC-heavy workloads.
+const GPU_BLOCK_SIZE: u32 = 256;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -168,15 +193,12 @@ impl GpuSolver {
         let func = self.module.get_function("generate_and_check_keys")?;
 
         let search_mode = SEQUENCE_MODE;
-        let mut block = GPU_BLOCK_SIZE;
-        let mut grid = GPU_GRID_SIZE;
 
-        if GPU_TEST_MODE {
-            block = 1;
-            grid = 1;
-        }
+        let range_start: u128 = if GPU_TEST_MODE { 1 } else { RANGE_START };
+        let block: u32 = if GPU_TEST_MODE { 1 } else { GPU_BLOCK_SIZE };
+        let grid: u32 = if GPU_TEST_MODE { 1 } else { GPU_GRID_SIZE };
+        let parallel_keys: u64 = if GPU_TEST_MODE { 1 } else { GPU_PARALLEL_KEYS };
 
-        let range_start: u128 = if search_mode { 1u128 } else { RANGE_START };
         let a_val: u128 = A_CONST;
         let b_val: u128 = B_CONST;
 
@@ -184,6 +206,7 @@ impl GpuSolver {
         unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
                 search_mode,
+                parallel_keys,
                 start_i as u64,               // low
                 (start_i >> 64) as u64,       // high
                 GPU_CHUNK_SIZE as u64,
@@ -278,7 +301,7 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
         let status = &dash[t];
         let idx_hex = format!("{:019X}", status.last_i);
         println!(
-            "{} {:2} Index: {} Current key: {} Checked: {:8}K Speed: {:6.1} K/s",
+            "{} {:2} Index: {} Current key: {} Checked: {:8}K keys Speed: {:6.1}K keys/s",
             mode,
             t,
             idx_hex,
@@ -289,10 +312,10 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
     }
 
     println!(
-        "\n╔═══════════════════════════════════════════════════════════════════════════════════════╗"
+        "\n╔════════════════════════════════════════════════════════════════════════════════════════════════╗"
     );
     println!(
-        "║ TOTAL CHECKED: {:9}K keys │ OVERALL SPEED: {:7.1} K/s │ Elapsed: {:3}h {:3}m {:3}s ║",
+        "║ TOTAL CHECKED: {:12}K keys │ OVERALL SPEED: {:8.1}K keys/s │ Elapsed: {:4}h {:3}m {:3}s ║",
         (total_checked_u128) / 1_000,
         overall_speed_kps,
         h,
@@ -300,7 +323,7 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
         s
     );
     println!(
-        "╚═══════════════════════════════════════════════════════════════════════════════════════╝"
+        "╚════════════════════════════════════════════════════════════════════════════════════════════════╝"
     );
 
     let _ = io::stdout().flush();
@@ -573,8 +596,8 @@ fn run_cpu_solver() {
 
     let num_threads = num_cpus::get();
 
-    let start = RANGE_START;
-    let total_keys_u128: u128 = 1u128 << N_BITS;
+    let start = 1u128;
+    let total_keys_u128: u128 = start << N_BITS;
     let end = start + total_keys_u128 - 1;
 
     let global_start = Instant::now();
@@ -929,15 +952,14 @@ fn update_gpu_dashboard(current_i: u128, checked_this_batch: u128) {
     if let Some(status) = dash.get_mut(0) {
         let elapsed = now.duration_since(status.last_update).as_millis();
 
-        if elapsed > 500_000 {
-            status.speed_kps = (checked_this_batch / elapsed / 1_000_000) as f64;
+        if elapsed >= 500 {
+            status.speed_kps = (checked_this_batch / elapsed * 1_000) as f64;
         }
 
         status.checked += checked_this_batch;
-        status.last_i = current_i;
+        status.last_i = RANGE_START + current_i;
 
-        let approx_key = if SEQUENCE_MODE { 0 } else { RANGE_START }
-            + permute_index(current_i.saturating_sub(1));
+        let approx_key = RANGE_START + permute_index(current_i.saturating_sub(1));
 
         status.key_hex = format!("{:019X}", approx_key);
         status.last_update = now;

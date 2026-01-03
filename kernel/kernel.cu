@@ -24,47 +24,40 @@ namespace ripemd160 {
 
 __constant__ bool DEBUG_TEST_MODE = false;
 
-// priv key 1
+
+// ==================================================================================================
+
+
+// 0000000000000000000000000000000000000000000000800000000000001_000
 // __constant__ uint8_t TARGET_H160[20] = {
-//     0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
-//     0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6
+//     0xbf, 0x57, 0x90, 0xb0, 0x2d, 0x67, 0xb2, 0x7d, 0x0b, 0x59, 
+//     0x47, 0x1f, 0xfc, 0x6d, 0x67, 0x0e, 0x40, 0xe1, 0x68, 0x01
 // };
 
-// priv key 100
+// 0000000000000000000000000000000000000000000000800000000001_000_000
 // __constant__ uint8_t TARGET_H160[20] = {
-//     0x10, 0x18, 0x85, 0x36, 0x70, 0xf9, 0xf3, 0xb0, 0x58, 0x2c,
-//     0x5b, 0x9e, 0xe8, 0xce, 0x93, 0x76, 0x4a, 0xc3, 0x2b, 0x93
+//     0x48, 0x8d, 0x91, 0xab, 0xc9, 0x84, 0xf6, 0x5e, 0x44, 0x9f, 
+//     0xb5, 0xce, 0xae, 0x0d, 0x06, 0x8c, 0x6b, 0x13, 0x58, 0xd1
 // };
 
-// Private key decimal 1_000
+// 0000000000000000000000000000000000000000000000800000000005_000_000
 // __constant__ uint8_t TARGET_H160[20] = {
-//     0x46, 0xce, 0xee, 0xd7, 0x97, 0xcd, 0x8c, 0x7b, 0x6e, 0x7f,
-//     0x52, 0x1b, 0x07, 0x5a, 0xd2, 0xfb, 0x1e, 0x5d, 0x7e, 0x42
+//     0xae, 0x69, 0xe5, 0x66, 0xaf, 0x52, 0xf6, 0x7f, 0xe3, 0x04, 
+//     0x3d, 0x69, 0x09, 0x42, 0x59, 0x1d, 0x71, 0xf5, 0x6b, 0x8a
 // };
 
-// Private key decimal 10_000
-// __constant__ uint8_t TARGET_H160[20] = {
-//     0xdb, 0x6e, 0xb1, 0x82, 0x09, 0x4f, 0xca, 0x54, 0x94, 0x78,
-//     0xa2, 0xe5, 0x8a, 0x16, 0xcf, 0x13, 0xb4, 0xdb, 0x3e, 0x2e
-// };
+// 0000000000000000000000000000000000000000000000800000000050_000_000
+__constant__ uint8_t TARGET_H160[20] = {
+    0x84, 0xe5, 0xc7, 0x09, 0x61, 0xe4, 0x28, 0x74, 0x3d, 0xa4, 
+    0x42, 0xcb, 0x1d, 0x8b, 0x79, 0x4a, 0x61, 0x88, 0x1c, 0xe5
+};
 
-// Private key decimal 100_000
-// __constant__ uint8_t TARGET_H160[20] = {
-//     0x96, 0xa9, 0xd7, 0x6a, 0x7f, 0x3f, 0x96, 0x1e, 0x30, 0x82,
-//     0xc1, 0x3b, 0xe7, 0x0d, 0x09, 0x19, 0x0e, 0x4f, 0xc3, 0x4b
-// };
-
-// Private key decimal 1_000_000
-// __constant__ uint8_t TARGET_H160[20] = {
-//     0x08, 0x50, 0xa3, 0xb1, 0x7f, 0xb3, 0x0e, 0x2d, 0x9b, 0x0d,
-//     0xc8, 0xc6, 0xaa, 0x50, 0x75, 0x2e, 0x2e, 0x41, 0x63, 0x35
-// };
 
 // Puzzle #72 priv key?
-__constant__ uint8_t TARGET_H160[20] = {
-    0xbf, 0x74, 0x13, 0xe8, 0xdf, 0x4e, 0x7a, 0x34, 0xce, 0x9d,
-    0xc1, 0x3e, 0x2f, 0x26, 0x48, 0x78, 0x3e, 0xc5, 0x4a, 0xdb
-};
+// __constant__ uint8_t TARGET_H160[20] = {
+//     0xbf, 0x74, 0x13, 0xe8, 0xdf, 0x4e, 0x7a, 0x34, 0xce, 0x9d,
+//     0xc1, 0x3e, 0x2f, 0x26, 0x48, 0x78, 0x3e, 0xc5, 0x4a, 0xdb
+// };
 
 
 // ==================================================================================================
@@ -1216,6 +1209,7 @@ __device__ __forceinline__ __uint128_t compute_private_key(
 
 extern "C" __global__ void generate_and_check_keys(
     bool search_mode,
+    uint64_t keys_per_thread, 
     uint64_t start_i_low, 
     uint64_t start_i_high, 
     uint64_t count, 
@@ -1228,7 +1222,6 @@ extern "C" __global__ void generate_and_check_keys(
     unsigned long long *out_found_index
 ) {
     const bool debug = DEBUG_TEST_MODE;
-    constexpr uint32_t KEYS_PER_THREAD = 1;
 
     uint64_t tid    = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -1241,14 +1234,14 @@ extern "C" __global__ void generate_and_check_keys(
 
     __uint128_t base_i      = ((__uint128_t)start_i_high << 64) | start_i_low;
     __uint128_t range_start = ((__uint128_t)range_start_high << 64) | range_start_low;
-    __uint128_t i0 = base_i + (__uint128_t)tid * KEYS_PER_THREAD;
-
+    __uint128_t i0 = base_i + (__uint128_t)tid * keys_per_thread;
+    
     // Out of range exit early
     if (i0 >= base_i + count) return;
 
     __uint128_t current_k;
     if (search_mode) {
-        current_k = i0;  // sequence: start exactly at range_start
+        current_k = range_start + i0;  // sequence: start exactly at range_start
     } else {
         current_k = compute_private_key(false, i0, range_start, a_low, a_high, b_low, b_high);  // PCG: permute i0
     }
@@ -1261,22 +1254,24 @@ extern "C" __global__ void generate_and_check_keys(
         priv[i] = (current_k >> (8 * i)) & 0xFF;
     }
 
-    if (debug) {
-        printf("\n--- Thread tid=%llu processing starting index i0=%llu ---\n",
-               (unsigned long long)tid, (unsigned long long)i0);
-        printf("Private key (dec): %llu\n", (unsigned long long)current_k);
-        printf("Private key (hex BE): ");
-        for (int b = 31; b >= 0; --b) printf("%02x", priv[b]);
-        printf("\n");
-    }
+    //     if (debug) {
+    //         printf("\n--- Thread tid=%llu processing starting index i0=%llu ---\n",
+    //                (unsigned long long)tid, (unsigned long long)i0);
+    // 
+    //         printf("Private key (dec): %llu\n", (unsigned long long)current_k);
+    // 
+    //         printf("Private key (hex BE): ");
+    //         for (int b = 31; b >= 0; --b) printf("%02x", priv[b]);
+    //         printf("\n");
+    //     }
 
 
     // ======= 2. Public key =======
     unsigned int pubX[8], pubY[8];
     scalarMultiplication(pubX, pubY, priv);
 
-    uint8_t pub_compressed[33];
-    getCompressedPubKey(pub_compressed, pubX, pubY);
+    // uint8_t pub_compressed[33];
+    // getCompressedPubKey(pub_compressed, pubX, pubY);
 
     // if (debug) {
     //     printf("Compressed pubkey: ");
@@ -1291,7 +1286,7 @@ extern "C" __global__ void generate_and_check_keys(
     copyInt(_1_CONSTANT, P.Z);
     
 
-    for (uint32_t j = 0; j < KEYS_PER_THREAD; ++j) {
+    for (uint32_t j = 0; j < keys_per_thread; ++j) {
         __uint128_t current_index = i0 + j;
 
         if (current_index >= base_i + count) return;
@@ -1300,7 +1295,6 @@ extern "C" __global__ void generate_and_check_keys(
         unsigned int affX[8], affY[8];
         jacobian_to_affine(P, affX, affY);
         
-        // unsigned int yParity = (P.Y[7] & 1u) ^ (P.Z[7] & 1u);
         unsigned int yParity = affY[7] & 1u;
 
         // ======= 4. SHA256 =======
@@ -1319,19 +1313,10 @@ extern "C" __global__ void generate_and_check_keys(
             sha_out[off + 3] =  word        & 0xff;
         }
 
-        uint8_t temp_comp[33];
-        getCompressedPubKey(temp_comp, affX, affY);
-        
-        // if (debug) {
-        //     printf("Point %llu compressed: ", (unsigned long long)(current_k + j));
-        //     for (int b = 0; b < 33; ++b) printf("%02x", temp_comp[b]);
-        //     printf("\n");
-        // }
-
         // if (debug) {
         //     printf("SHA256 digest:      ");
         //     for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
-        //     printf("\n\n");
+        //     printf("\n");
         // }
 
         unsigned int sha_words[8];
@@ -1395,7 +1380,7 @@ extern "C" __global__ void generate_and_check_keys(
             return;
         }
 
-        if (j + 1 < KEYS_PER_THREAD) {
+        if (j + 1 < keys_per_thread) {
             jacobianAddG(P);
         }
     }
