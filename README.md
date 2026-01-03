@@ -24,6 +24,7 @@ That would be stealing and is illegal.
 - **Live dashboard** showing progress, speed, current key
 - **Crash-safe**: progress saved to `status/` folder, resumes automatically
 - **No overlaps or skipped keys** (shared allocator with logging)
+- **Sequence** and **PCG** (Permuted Congruential Generator) search
 
 
 # Third party libraries:
