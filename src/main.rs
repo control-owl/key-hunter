@@ -45,7 +45,7 @@ const PROGRESS_SAVE_INTERVAL_SEC: u64 = 5; // per-thread checkpoint
 const CPU_PARALLEL_KEYS: usize = 64;
 // Chunk size claimed atomically per assignment. Larger chunks reduce allocator contention
 // but increase potential rework on crash; we use assignment log to avoid skips.
-const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024 * 10; // 64 * 1024 * 10 = 655,360 keys per claim
+const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024; // 64 * 1024 = 65,536 keys per claim
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -78,7 +78,7 @@ const GPU_GRID_SIZE: u32 = GPU_SM_COUNT * 8;
 // Must be a multiple of 32 (warp size).
 // Controls occupancy, register pressure, and SM utilization.
 // Values between 128 and 256 provide the best balance for EC-heavy workloads.
-const GPU_BLOCK_SIZE: u32 = 256;
+const GPU_BLOCK_SIZE: u32 = GPU_SM_COUNT * 16;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -295,7 +295,14 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
     println!("Target Address: {}", TARGET_ADDRESS);
     println!("Range : {:019X} ──▶ {:019X}", start, end);
     println!("Threads : {}", num_threads);
-    println!("Parallel tasks: {}\n", CPU_PARALLEL_KEYS);
+    println!(
+        "Parallel tasks: {}\n",
+        if mode == "CPU" {
+            CPU_PARALLEL_KEYS
+        } else {
+            GPU_PARALLEL_KEYS as usize
+        }
+    );
 
     for t in 0..num_threads {
         let status = &dash[t];
@@ -329,19 +336,23 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
     let _ = io::stdout().flush();
 }
 
-fn save_thread_checkpoint(thread_id: u64, index: u128) {
-    let path = format!("{}/CPU{}", STATUS_DIR, thread_id);
-    let hex = format!("{:X}", index);
-
-    if let Err(e) = std::fs::write(&path, hex) {
-        eprintln!("Failed to save CPU{} progress: {}", thread_id, e);
-    }
-}
+// fn save_thread_checkpoint(thread_id: u64, index: u128) {
+//     let path = format!("{}/CPU{}", STATUS_DIR, thread_id);
+//     let hex = format!("{:X}", index);
+//
+//     if let Err(e) = std::fs::write(&path, hex) {
+//         eprintln!("Failed to save CPU{} progress: {}", thread_id, e);
+//     }
+// }
 
 fn save_alloc_state(alloc_arc: &Arc<Mutex<AllocState>>) {
     let a = alloc_arc.lock().unwrap();
 
-    save_next_i(a.next_i);
+    let path = GLOBAL_NEXT_FILE;
+
+    if let Err(e) = std::fs::write(path, format!("{:X}", a.next_i)) {
+        eprintln!("Failed to save GLOBAL_NEXT: {}", e);
+    }
 }
 
 fn load_next_i() -> u128 {
@@ -353,14 +364,6 @@ fn load_next_i() -> u128 {
         }
     }
     0
-}
-
-fn save_next_i(v: u128) {
-    let path = GLOBAL_NEXT_FILE;
-
-    if let Err(e) = std::fs::write(path, format!("{:X}", v)) {
-        eprintln!("Failed to save GLOBAL_NEXT: {}", e);
-    }
 }
 
 fn append_log_assigned(start_i: u128, len: u128) {
@@ -573,19 +576,16 @@ fn main() {
     }
 }
 
-fn run_cpu_solver() {
-    //     let target_encoded = if TEST_MODE {
-    //         TEST_TARGET_ENCODED
-    //     } else {
-    //         TARGET_ENCODED
-    //     };
-    //
-    //     let target_address = if TEST_MODE {
-    //         TEST_TARGET_ADDRESS
-    //     } else {
-    //         TARGET_ADDRESS
-    //     };
+// New logic
+// ┌──────────────────────────┐
+// │ start_solver(mode)       │
+// ├──────────────────────────┤
+// │ Allocator (single owner) │  ← owns next_i + pending
+// ├──────────────────────────┤
+// │ Workers                  │  ← CPU threads / GPU loop
+// └──────────────────────────┘
 
+fn run_cpu_solver() {
     let mode = "CPU";
     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
         backup_and_clean();
@@ -596,9 +596,9 @@ fn run_cpu_solver() {
 
     let num_threads = num_cpus::get();
 
-    let start = 1u128;
-    let total_keys_u128: u128 = start << N_BITS;
-    let end = start + total_keys_u128 - 1;
+    let start: u128 = RANGE_START;
+    let total_keys_u128: u128 = 1u128 << N_BITS;
+    let end: u128 = start + total_keys_u128 - 1;
 
     let global_start = Instant::now();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -658,6 +658,8 @@ fn run_cpu_solver() {
         panic::set_hook(Box::new(move |_info| {
             save_alloc_state(&alloc_for_panic);
             eprintln!("\n\nPanic detected! Progress saved.");
+            backup_and_clean();
+            eprintln!("Backup done.");
         }));
     }
 
@@ -683,7 +685,7 @@ fn run_cpu_solver() {
 
                     a.next_i += len;
 
-                    save_next_i(a.next_i);
+                    save_alloc_state(&alloc);
                     append_log_assigned(start_i, len);
 
                     Some(Chunk { start_i, len })
@@ -769,7 +771,7 @@ fn run_cpu_solver() {
                         }
 
                         status.checked = checked;
-                        status.last_i = i;
+                        status.last_i = i + RANGE_START;
                         status.key_hex = first_k_hex.unwrap_or_else(|| String::from(""));
                         status.last_update = now;
                         status.last_checked = checked;
@@ -779,7 +781,7 @@ fn run_cpu_solver() {
                 }
 
                 if now.duration_since(last_save).as_secs() >= PROGRESS_SAVE_INTERVAL_SEC {
-                    save_thread_checkpoint(t as u64, i);
+                    save_alloc_state(&alloc);
 
                     last_save = now;
                 }
@@ -791,7 +793,7 @@ fn run_cpu_solver() {
             append_log_finished(chunk.start_i);
         }
 
-        save_thread_checkpoint(t as u64, 0);
+        save_alloc_state(&alloc);
         let mut dash = DASHBOARD.lock().unwrap();
         if t_usize < dash.len() {
             dash[t_usize].checked = checked;
@@ -868,6 +870,11 @@ fn run_gpu_solver() {
     let _ = fs::remove_file(ALLOC_LOG_FILE);
     File::create(ALLOC_LOG_FILE).unwrap();
 
+    let alloc = Arc::new(Mutex::new(AllocState {
+        next_i: current_i.min(total_keys_u128),
+        pending: recovered.clone(),
+    }));
+
     // Dashboard thread
     let dash_thread = {
         let shutdown = shutdown.clone();
@@ -880,10 +887,13 @@ fn run_gpu_solver() {
         })
     };
 
+    let panic_alloc = alloc.clone();
     // Panic hook
     panic::set_hook(Box::new(move |_| {
         eprintln!("\nPanic! Saving progress...");
-        save_next_i(current_i);
+        save_alloc_state(&panic_alloc);
+        backup_and_clean();
+        eprintln!("Backup done.");
     }));
 
     println!("Starting GPU search from index: {:X}", current_i);
@@ -908,20 +918,24 @@ fn run_gpu_solver() {
 
         // add_to_total_checked(batch_len as u128);
         current_i = chunk.start_i + chunk.len;
-        save_next_i(current_i);
+        save_alloc_state(&alloc);
         append_log_finished(chunk.start_i);
 
         update_gpu_dashboard(current_i, chunk.len);
     }
 
     // Main search loop
+    let mut last_log_time = Instant::now();
+    let mut pending_chunks: Vec<(u128, u128)> = Vec::new(); // (start, len)
+
     while current_i < total_keys_u128 && !FOUND.load(Ordering::Relaxed) {
         let len = GPU_CHUNK_SIZE.min(total_keys_u128 - current_i);
         let chunk_start = current_i;
 
-        append_log_assigned(chunk_start, len);
-        save_next_i(current_i + len);
+        // Remember chunk
+        pending_chunks.push((chunk_start, len));
 
+        // Perform GPU search
         if let Some(key) = solver.search_batch(current_i).unwrap_or(None) {
             FOUND.store(true, Ordering::Relaxed);
             save_found_key_gpu(key);
@@ -930,9 +944,37 @@ fn run_gpu_solver() {
 
         add_to_total_checked(len);
         current_i += len;
-        append_log_finished(chunk_start);
-
         update_gpu_dashboard(current_i, len);
+
+        // 4. Flush pending logs only every 5 seconds
+        let now = Instant::now();
+        if now.duration_since(last_log_time).as_secs() >= PROGRESS_SAVE_INTERVAL_SEC {
+            // 1. Update next_i
+            save_alloc_state(&alloc);
+
+            // Write all pending assigned chunks
+            for &(start, length) in &pending_chunks {
+                append_log_assigned(start, length);
+            }
+
+            // Write all as finished
+            for &(start, _) in &pending_chunks {
+                append_log_finished(start);
+            }
+
+            pending_chunks.clear();
+            last_log_time = now;
+        }
+    }
+
+    // Final flush on exit or found
+    if !pending_chunks.is_empty() {
+        for &(start, length) in &pending_chunks {
+            append_log_assigned(start, length);
+        }
+        for &(start, _) in &pending_chunks {
+            append_log_finished(start);
+        }
     }
 
     shutdown.store(true, Ordering::Relaxed);
