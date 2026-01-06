@@ -20,7 +20,7 @@ That would be stealing and is illegal.
 ### Features
 - **CPU solver** (multi-threaded using all cores)
 - **GPU solver** (CUDA-based, optimized for NVIDIA GeForce GTX 1650 (4GB GDDR5 memory))
-- ~~Combined CPU + GPU mode~~
+- **Combined CPU + GPU mode**
 - **Live dashboard** showing progress, speed, current key
 - **Crash-safe**: progress saved to `status/` folder, resumes automatically
 - **No overlaps or skipped keys** (shared allocator with logging)
