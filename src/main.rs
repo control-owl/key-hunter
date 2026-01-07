@@ -50,7 +50,7 @@ const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024; // 64 * 1024 = 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
 const GPU_TEST_MODE: bool = false;
-const GPU_PARALLEL_KEYS: u64 = 32;
+const GPU_PARALLEL_KEYS: u32 = 32; // 32 MAX
 // Host (CPU)
 //  └── GPU_CHUNK_SIZE   ← how much work you give the GPU per launch
 //       └── GRID        ← how many blocks exist concurrently
@@ -67,17 +67,19 @@ const GPU_SM_COUNT: u32 = 16; // NVIDIA GeForce GTX 1650 Mobile
 // but excessively large chunks can distort benchmarks and increase latency.
 // This value should be large enough to amortize overhead, but small enough
 // to complete within a few seconds for accurate throughput measurement.
-const GPU_CHUNK_SIZE: u128 = 1024 * 96 * GPU_SM_COUNT as u128;
+// GPU_CHUNK_SIZE=grid⋅block⋅GPU_PARALLEL_KEYS
+// const GPU_CHUNK_SIZE: u128 = 1024 * 96 * GPU_SM_COUNT as u128;
+const GPU_CHUNK_SIZE: u128 = (GPU_GRID_SIZE * GPU_BLOCK_SIZE * GPU_PARALLEL_KEYS) as u128;
 
 // Total number of CUDA blocks launched per kernel.
 // Should be a multiple of the SM count to ensure full device saturation.
 // Increasing beyond SM saturation provides no additional performance benefit.
-const GPU_GRID_SIZE: u32 = GPU_SM_COUNT * 16;
+const GPU_GRID_SIZE: u32 = GPU_BLOCK_SIZE * 2;
 
 // Number of threads per CUDA block.
 // Must be a multiple of 32 (warp size).
 // Controls occupancy, register pressure, and SM utilization.
-const GPU_BLOCK_SIZE: u32 = 64;
+const GPU_BLOCK_SIZE: u32 = (GPU_SM_COUNT * 2) * 2;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -219,7 +221,11 @@ impl GpuSolver {
         let range_start: u128 = if GPU_TEST_MODE { 1 } else { RANGE_START };
         let block: u32 = if GPU_TEST_MODE { 1 } else { GPU_BLOCK_SIZE };
         let grid: u32 = if GPU_TEST_MODE { 1 } else { GPU_GRID_SIZE };
-        let parallel_keys: u64 = if GPU_TEST_MODE { 1 } else { GPU_PARALLEL_KEYS };
+        let parallel_keys: u64 = if GPU_TEST_MODE {
+            1u64
+        } else {
+            GPU_PARALLEL_KEYS as u64
+        };
 
         let a_val: u128 = A_CONST;
         let b_val: u128 = B_CONST;
