@@ -1107,7 +1107,12 @@ fn spawn_cpu_workers(
                             }
                             status.checked = checked;
                             status.last_i = i + RANGE_START;
-                            status.key_hex = first_k_hex.clone().unwrap_or_default();
+
+                            let approx_key =
+                                RANGE_START + permute_index(chunk.start_i.saturating_sub(1));
+                            status.key_hex = format!("{:019X}", approx_key);
+
+                            // status.key_hex = first_k_hex.clone().unwrap_or_default();
                             status.last_update = now;
                             status.last_checked = checked;
                         }
@@ -1208,7 +1213,9 @@ fn spawn_gpu_worker(
                 status.last_i = start + chunk.start_i;
                 status.last_update = gpu_end;
                 status.last_checked = status.checked;
-                status.key_hex = format!("{:019X}", start + chunk.start_i);
+                let approx_key = RANGE_START + permute_index(chunk.start_i.saturating_sub(1));
+
+                status.key_hex = format!("{:019X}", approx_key);
             }
 
             // --- PERIODIC SAVE ---
