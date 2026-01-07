@@ -23,7 +23,7 @@ namespace ripemd160 {
 
 
 __constant__ bool DEBUG_TEST_MODE = false;
-
+#define MAX_KEYS_PER_THREAD 32
 
 // ==================================================================================================
 
@@ -44,6 +44,12 @@ __constant__ bool DEBUG_TEST_MODE = false;
 // __constant__ uint8_t TARGET_H160[20] = {
 //     0xae, 0x69, 0xe5, 0x66, 0xaf, 0x52, 0xf6, 0x7f, 0xe3, 0x04, 
 //     0x3d, 0x69, 0x09, 0x42, 0x59, 0x1d, 0x71, 0xf5, 0x6b, 0x8a
+// };
+
+// // 0000000000000000000000000000000000000000000000800000000010_000_000
+// __constant__ uint8_t TARGET_H160[20] = {
+//     0xc7, 0x60, 0xc6, 0x4c, 0x65, 0x62, 0xab, 0x9e, 0xe2, 0xcc, 
+//     0xe2, 0x91, 0x8f, 0x09, 0xfc, 0x34, 0x4c, 0x96, 0x9b, 0xb4
 // };
 
 // 0000000000000000000000000000000000000000000000800000000050_000_000
@@ -1007,7 +1013,7 @@ __device__ __forceinline__ void jacobianMixedAdd(
 
 // ==================================================================================================
 
-
+// 6400K spped
 // __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8], const uint8_t scalar[32]) {
 //     // Initialize point to generator point in Jacobian coordinates
 //     unsigned int X[8], Y[8], Z[8];
@@ -1058,63 +1064,180 @@ __device__ __forceinline__ void jacobianMixedAdd(
 // }
 
 // Fixed-base scalar multiplication: Q = k * G
-__device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],unsigned int pubY[8],const uint8_t scalar[32]) {
-    // Result R in Jacobian coordinates, start at infinity (Z = 0)
+// 8493K spped
+// __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],unsigned int pubY[8],const uint8_t scalar[32]) {
+//     // Result R in Jacobian coordinates, start at infinity (Z = 0)
+//     unsigned int RX[8], RY[8], RZ[8];
+//     setZero(RX);
+//     setZero(RY);
+//     setZero(RZ);  // Z==0 point at infinity
+// 
+//     // Process scalar in 4-bit windows, MSB window → LSB window.
+//     // Window index w = 0..63
+//     // Window w contains bits: 255 - 4*w down to 252 - 4*w (inclusive).
+//     for (int w = 0; w < 64; ++w) {
+//         // 1) R = 16 * R (4 doublings) if R is not infinity
+//         if (!isZero(RZ)) {
+//             unsigned int X2[8], Y2[8], Z2[8];
+// 
+//             jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+//             copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+// 
+//             jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+//             copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+// 
+//             jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+//             copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+// 
+//             jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+//             copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+//         }
+// 
+//         // 2) Extract 4 bits for this window from the little-endian scalar
+//         // do this in tje safest possible way: gather 4 bits individually.
+//         uint8_t nibble = 0;
+// 
+//         // bit_pos = global bit index (0..255), where 0 is LSB scalar[0]
+//         // We want bits: 255 - 4*w, 254 - 4*w, 253 - 4*w, 252 - 4*w
+//         for (int b = 0; b < 4; ++b) {
+//             int bit_pos = 255 - (w * 4 + b);
+//             int byte_idx = bit_pos >> 3;          // / 8
+//             int bit_in_byte = bit_pos & 7;        // % 8
+// 
+//             uint8_t byte = scalar[byte_idx];
+//             uint8_t bit = (byte >> bit_in_byte) & 0x01u;
+//             // Build nibble from MSB to LSB: first bit becomes bit 3, etc.
+//             nibble = (uint8_t)((nibble << 1) | bit);
+//         }
+// 
+//         if (nibble == 0) {
+//             continue;  // this window contributes nothing
+//         }
+// 
+//         // 3) Add nibble * G using your precomputed table.
+//         //    i have PRECOMP_X[64][8], PRECOMP_Y[64][8] for 0G..63G.
+//         //    Here we only use 1..15 for a 4-bit window
+//         const unsigned int* Px = PRECOMP_X[nibble];  // safe: 1..15
+//         const unsigned int* Py = PRECOMP_Y[nibble];
+// 
+//         if (isZero(RZ)) {
+//             // R is infinity → R = nibble*G (affine point)
+//             copyInt(Px, RX);
+//             copyInt(Py, RY);
+//             copyInt(_1_CONSTANT, RZ);  // Z = 1
+//         } else {
+//             unsigned int X3[8], Y3[8], Z3[8];
+//             jacobianMixedAdd(X3, Y3, Z3,
+//                              RX, RY, RZ,
+//                              Px, Py);
+//             copyInt(X3, RX);
+//             copyInt(Y3, RY);
+//             copyInt(Z3, RZ);
+//         }
+//     }
+// 
+//     // 4) Convert final R to affine (pubX, pubY)
+//     if (isZero(RZ)) {
+//         setZero(pubX);
+//         setZero(pubY);
+//         return;
+//     }
+// 
+//     unsigned int Zinv[8];
+//     copyInt(RZ, Zinv);
+//     IMP(Zinv);  // Zinv = 1/Z
+// 
+//     unsigned int Zinv2[8];
+//     MMP(Zinv, Zinv, Zinv2);    // Zinv^2
+// 
+//     unsigned int Zinv3[8];
+//     MMP(Zinv2, Zinv, Zinv3);   // Zinv^3
+// 
+//     MMP(RX, Zinv2, pubX);      // X / Z^2
+//     MMP(RY, Zinv3, pubY);      // Y / Z^3
+// }
+
+// Fixed-base scalar multiplication: Q = k * G
+// scalar[32] is LITTLE-ENDIAN as you currently fill it:
+//   priv[i] = (current_k >> (8 * i)) & 0xFF;
+// Bit index 0  = LSB of scalar[0]
+// Bit index 255 = MSB of scalar[31]
+//
+// 5-bit window method:
+// - Total bits = 256
+// - First (top) window uses 1 bit (bit 255)
+// - Remaining 51 windows use 5 bits each
+//   → windows: [1, 5, 5, ..., 5] bits, total 1 + 51*5 = 256
+// For each window after the first, we do `window_size` doublings, then add `window_value * G`.
+__device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],
+                                                     unsigned int pubY[8],
+                                                     const uint8_t scalar[32]) {
+    // R = point at infinity in Jacobian coords (Z = 0)
     unsigned int RX[8], RY[8], RZ[8];
     setZero(RX);
     setZero(RY);
-    setZero(RZ);  // Z==0 point at infinity
+    setZero(RZ);
 
-    // Process scalar in 4-bit windows, MSB window → LSB window.
-    // Window index w = 0..63
-    // Window w contains bits: 255 - 4*w down to 252 - 4*w (inclusive).
-    for (int w = 0; w < 64; ++w) {
-        // 1) R = 16 * R (4 doublings) if R is not infinity
-        if (!isZero(RZ)) {
+    const int total_bits = 256;
+    const int base_window_size = 5;
+
+    // First window size (top) can be smaller than base if total_bits % base != 0
+    int first_window_bits = total_bits % base_window_size; // 256 % 5 = 1
+    if (first_window_bits == 0) {
+        first_window_bits = base_window_size;
+    }
+
+    int num_windows = (total_bits - first_window_bits) / base_window_size + 1; // 52 windows
+    int bit_pos = total_bits - 1;  // start at bit 255
+
+    for (int w = 0; w < num_windows; ++w) {
+        int window_size = (w == 0) ? first_window_bits : base_window_size;
+
+        // 1) For all windows except the first, do `window_size` doublings
+        if (w > 0 && !isZero(RZ)) {
             unsigned int X2[8], Y2[8], Z2[8];
 
-            jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
-            copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
-
-            jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
-            copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
-
-            jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
-            copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
-
-            jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
-            copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+            #pragma unroll
+            for (int d = 0; d < window_size; ++d) {
+                jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+                copyInt(X2, RX);
+                copyInt(Y2, RY);
+                copyInt(Z2, RZ);
+            }
         }
 
-        // 2) Extract 4 bits for this window from the little-endian scalar
-        // do this in tje safest possible way: gather 4 bits individually.
-        uint8_t nibble = 0;
+        // 2) Extract this window's value from scalar (little-endian)
+        //    We build the value by reading bits from MSB to LSB of this window.
+        //    Window covers bits [bit_pos .. bit_pos - window_size + 1].
+        uint8_t win = 0;
 
-        // bit_pos = global bit index (0..255), where 0 is LSB scalar[0]
-        // We want bits: 255 - 4*w, 254 - 4*w, 253 - 4*w, 252 - 4*w
-        for (int b = 0; b < 4; ++b) {
-            int bit_pos = 255 - (w * 4 + b);
-            int byte_idx = bit_pos >> 3;          // / 8
-            int bit_in_byte = bit_pos & 7;        // % 8
+        for (int b = 0; b < window_size; ++b) {
+            int current_bit = bit_pos - b;   // from high to low within the window
+            int byte_idx    = current_bit >> 3;
+            int bit_in_byte = current_bit & 7;
 
             uint8_t byte = scalar[byte_idx];
-            uint8_t bit = (byte >> bit_in_byte) & 0x01u;
-            // Build nibble from MSB to LSB: first bit becomes bit 3, etc.
-            nibble = (uint8_t)((nibble << 1) | bit);
+            uint8_t bit  = (byte >> bit_in_byte) & 0x01u;
+
+            // Build the window value from MSB to LSB
+            win = (uint8_t)((win << 1) | bit);
         }
 
-        if (nibble == 0) {
-            continue;  // this window contributes nothing
+        // Move bit_pos down for the next window
+        bit_pos -= window_size;
+
+        if (win == 0) {
+            continue; // no addition needed for this window
         }
 
-        // 3) Add nibble * G using your precomputed table.
-        //    i have PRECOMP_X[64][8], PRECOMP_Y[64][8] for 0G..63G.
-        //    Here we only use 1..15 for a 4-bit window
-        const unsigned int* Px = PRECOMP_X[nibble];  // safe: 1..15
-        const unsigned int* Py = PRECOMP_Y[nibble];
+        // 3) Add win * G using your precomputed table:
+        //    PRECOMP_X[0..63], PRECOMP_Y[0..63]
+        //    We use 1..31 here (5-bit window).
+        const unsigned int* Px = PRECOMP_X[win];
+        const unsigned int* Py = PRECOMP_Y[win];
 
         if (isZero(RZ)) {
-            // R is infinity → R = nibble*G (affine point)
+            // R was infinity → set R = win * G (affine)
             copyInt(Px, RX);
             copyInt(Py, RY);
             copyInt(_1_CONSTANT, RZ);  // Z = 1
@@ -1129,7 +1252,7 @@ __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],unsign
         }
     }
 
-    // 4) Convert final R to affine (pubX, pubY)
+    // 4) Convert final R to affine pubX, pubY
     if (isZero(RZ)) {
         setZero(pubX);
         setZero(pubY);
@@ -1138,16 +1261,16 @@ __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],unsign
 
     unsigned int Zinv[8];
     copyInt(RZ, Zinv);
-    IMP(Zinv);  // Zinv = 1/Z
+    IMP(Zinv);   // Zinv = 1/Z
 
     unsigned int Zinv2[8];
-    MMP(Zinv, Zinv, Zinv2);    // Zinv^2
+    MMP(Zinv, Zinv, Zinv2); // Zinv^2
 
     unsigned int Zinv3[8];
-    MMP(Zinv2, Zinv, Zinv3);   // Zinv^3
+    MMP(Zinv2, Zinv, Zinv3); // Zinv^3
 
-    MMP(RX, Zinv2, pubX);      // X / Z^2
-    MMP(RY, Zinv3, pubY);      // Y / Z^3
+    MMP(RX, Zinv2, pubX);   // X / Z^2
+    MMP(RY, Zinv3, pubY);   // Y / Z^3
 }
 
 

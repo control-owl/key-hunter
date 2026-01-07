@@ -50,7 +50,7 @@ const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024; // 64 * 1024 = 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
 const GPU_TEST_MODE: bool = false;
-const GPU_PARALLEL_KEYS: u64 = 4;
+const GPU_PARALLEL_KEYS: u64 = 16;
 // Host (CPU)
 //  └── GPU_CHUNK_SIZE   ← how much work you give the GPU per launch
 //       └── GRID        ← how many blocks exist concurrently
@@ -72,13 +72,12 @@ const GPU_CHUNK_SIZE: u128 = 1024 * 12 * GPU_SM_COUNT as u128;
 // Total number of CUDA blocks launched per kernel.
 // Should be a multiple of the SM count to ensure full device saturation.
 // Increasing beyond SM saturation provides no additional performance benefit.
-const GPU_GRID_SIZE: u32 = GPU_SM_COUNT * 8;
+const GPU_GRID_SIZE: u32 = 128;
 
 // Number of threads per CUDA block.
 // Must be a multiple of 32 (warp size).
 // Controls occupancy, register pressure, and SM utilization.
-// Values between 128 and 256 provide the best balance for EC-heavy workloads.
-const GPU_BLOCK_SIZE: u32 = GPU_SM_COUNT * 16;
+const GPU_BLOCK_SIZE: u32 = 64;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -610,6 +609,8 @@ fn main() {
     println!("Range : {}", RANGE_START);
     println!();
 
+    setup_status_dir();
+
     loop {
         print!("Select mode:\n  [1] CPU\n  [2] GPU\n  [3] CPU+GPU\n\nChoice (1/2/3): ");
         io::stdout().flush().unwrap();
@@ -648,9 +649,6 @@ fn start_solver(mode: &str) {
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let global_start = Instant::now();
-
-    // 1. Create status directory
-    setup_status_dir();
 
     // 2. Recover allocator state
     let alloc = Arc::new(Mutex::new(recover_allocator(total_keys)));
@@ -780,6 +778,8 @@ fn setup_status_dir() {
         backup_and_clean();
     } else {
         fs::create_dir_all(STATUS_DIR).expect("Failed to create status directory");
+        File::create(ALLOC_LOG_FILE).expect("Failed to create new ALLOC_LOG_FILE");
+        File::create(GLOBAL_NEXT_FILE).expect("Failed to create new GLOBAL_NEXT_FILE");
     }
 }
 
