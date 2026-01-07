@@ -1008,54 +1008,148 @@ __device__ __forceinline__ void jacobianMixedAdd(
 // ==================================================================================================
 
 
-__device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8], const uint8_t scalar[32]) {
-    // Initialize point to generator point in Jacobian coordinates
-    unsigned int X[8], Y[8], Z[8];
-    setZero(X);
-    setZero(Y);
-    setZero(Z);
+// __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8], const uint8_t scalar[32]) {
+//     // Initialize point to generator point in Jacobian coordinates
+//     unsigned int X[8], Y[8], Z[8];
+//     setZero(X);
+//     setZero(Y);
+//     setZero(Z);
+// 
+//     // Perform scalar multiplication
+//     for (int byte_idx = 0; byte_idx < 32; byte_idx++) {
+//         uint8_t byte = scalar[31 - byte_idx];
+//         for (int bit_idx = 7; bit_idx >= 0; bit_idx--) {
+//             // Double point
+//             unsigned int X2[8], Y2[8], Z2[8];
+//             jacobianDouble(X2, Y2, Z2, X, Y, Z);
+//             copyInt(X2, X);
+//             copyInt(Y2, Y);
+//             copyInt(Z2, Z);
+// 
+//             // Add point if bit is set
+//             bool bit = (byte >> bit_idx) & 1;
+//             if (bit) {
+//                 unsigned int tempX[8], tempY[8], tempZ[8];
+//                 jacobianMixedAdd(tempX, tempY, tempZ, X, Y, Z, PRECOMP_X[1], PRECOMP_Y[1]);
+//                 copyInt(tempX, X);
+//                 copyInt(tempY, Y);
+//                 copyInt(tempZ, Z);
+//             }
+//         }
+//     }
+// 
+//     // Convert to affine
+//     if (isZero(Z)) {
+//         setZero(pubX);
+//         setZero(pubY);
+//         return;
+//     }
+// 
+//     unsigned int denominator[8], inv_z[8];
+//     SMP(Z, denominator); // denom = Z²
+//     copyInt(Z, inv_z);
+//     IMP(inv_z); // inv_z = 1/Z
+//     IMP(denominator); // denom = 1/Z²
+//     MMP(X, denominator, pubX); // x = X / Z²
+// 
+//     unsigned int temp[8];
+//     MMP(Y, denominator, temp); // temp = Y / Z²
+//     MMP(temp, inv_z, pubY); // y = Y / Z³
+// }
 
-    // Perform scalar multiplication
-    for (int byte_idx = 0; byte_idx < 32; byte_idx++) {
-        uint8_t byte = scalar[31 - byte_idx];
-        for (int bit_idx = 7; bit_idx >= 0; bit_idx--) {
-            // Double point
+// Fixed-base scalar multiplication: Q = k * G
+__device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],unsigned int pubY[8],const uint8_t scalar[32]) {
+    // Result R in Jacobian coordinates, start at infinity (Z = 0)
+    unsigned int RX[8], RY[8], RZ[8];
+    setZero(RX);
+    setZero(RY);
+    setZero(RZ);  // Z==0 point at infinity
+
+    // Process scalar in 4-bit windows, MSB window → LSB window.
+    // Window index w = 0..63
+    // Window w contains bits: 255 - 4*w down to 252 - 4*w (inclusive).
+    for (int w = 0; w < 64; ++w) {
+        // 1) R = 16 * R (4 doublings) if R is not infinity
+        if (!isZero(RZ)) {
             unsigned int X2[8], Y2[8], Z2[8];
-            jacobianDouble(X2, Y2, Z2, X, Y, Z);
-            copyInt(X2, X);
-            copyInt(Y2, Y);
-            copyInt(Z2, Z);
 
-            // Add point if bit is set
-            bool bit = (byte >> bit_idx) & 1;
-            if (bit) {
-                unsigned int tempX[8], tempY[8], tempZ[8];
-                jacobianMixedAdd(tempX, tempY, tempZ, X, Y, Z, PRECOMP_X[1], PRECOMP_Y[1]);
-                copyInt(tempX, X);
-                copyInt(tempY, Y);
-                copyInt(tempZ, Z);
-            }
+            jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+            copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+
+            jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+            copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+
+            jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+            copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+
+            jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
+            copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
+        }
+
+        // 2) Extract 4 bits for this window from the little-endian scalar
+        // do this in tje safest possible way: gather 4 bits individually.
+        uint8_t nibble = 0;
+
+        // bit_pos = global bit index (0..255), where 0 is LSB scalar[0]
+        // We want bits: 255 - 4*w, 254 - 4*w, 253 - 4*w, 252 - 4*w
+        for (int b = 0; b < 4; ++b) {
+            int bit_pos = 255 - (w * 4 + b);
+            int byte_idx = bit_pos >> 3;          // / 8
+            int bit_in_byte = bit_pos & 7;        // % 8
+
+            uint8_t byte = scalar[byte_idx];
+            uint8_t bit = (byte >> bit_in_byte) & 0x01u;
+            // Build nibble from MSB to LSB: first bit becomes bit 3, etc.
+            nibble = (uint8_t)((nibble << 1) | bit);
+        }
+
+        if (nibble == 0) {
+            continue;  // this window contributes nothing
+        }
+
+        // 3) Add nibble * G using your precomputed table.
+        //    i have PRECOMP_X[64][8], PRECOMP_Y[64][8] for 0G..63G.
+        //    Here we only use 1..15 for a 4-bit window
+        const unsigned int* Px = PRECOMP_X[nibble];  // safe: 1..15
+        const unsigned int* Py = PRECOMP_Y[nibble];
+
+        if (isZero(RZ)) {
+            // R is infinity → R = nibble*G (affine point)
+            copyInt(Px, RX);
+            copyInt(Py, RY);
+            copyInt(_1_CONSTANT, RZ);  // Z = 1
+        } else {
+            unsigned int X3[8], Y3[8], Z3[8];
+            jacobianMixedAdd(X3, Y3, Z3,
+                             RX, RY, RZ,
+                             Px, Py);
+            copyInt(X3, RX);
+            copyInt(Y3, RY);
+            copyInt(Z3, RZ);
         }
     }
 
-    // Convert to affine
-    if (isZero(Z)) {
+    // 4) Convert final R to affine (pubX, pubY)
+    if (isZero(RZ)) {
         setZero(pubX);
         setZero(pubY);
         return;
     }
 
-    unsigned int denominator[8], inv_z[8];
-    SMP(Z, denominator); // denom = Z²
-    copyInt(Z, inv_z);
-    IMP(inv_z); // inv_z = 1/Z
-    IMP(denominator); // denom = 1/Z²
-    MMP(X, denominator, pubX); // x = X / Z²
+    unsigned int Zinv[8];
+    copyInt(RZ, Zinv);
+    IMP(Zinv);  // Zinv = 1/Z
 
-    unsigned int temp[8];
-    MMP(Y, denominator, temp); // temp = Y / Z²
-    MMP(temp, inv_z, pubY); // y = Y / Z³
+    unsigned int Zinv2[8];
+    MMP(Zinv, Zinv, Zinv2);    // Zinv^2
+
+    unsigned int Zinv3[8];
+    MMP(Zinv2, Zinv, Zinv3);   // Zinv^3
+
+    MMP(RX, Zinv2, pubX);      // X / Z^2
+    MMP(RY, Zinv3, pubY);      // Y / Z^3
 }
+
 
 __device__ __forceinline__ void getCompressedPubKey(uint8_t *output, const unsigned int x[8], const unsigned int y[8]) {
     // HSB
