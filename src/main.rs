@@ -67,12 +67,12 @@ const GPU_SM_COUNT: u32 = 16; // NVIDIA GeForce GTX 1650 Mobile
 // but excessively large chunks can distort benchmarks and increase latency.
 // This value should be large enough to amortize overhead, but small enough
 // to complete within a few seconds for accurate throughput measurement.
-const GPU_CHUNK_SIZE: u128 = 1024 * 12 * GPU_SM_COUNT as u128;
+const GPU_CHUNK_SIZE: u128 = 1024 * 96 * GPU_SM_COUNT as u128;
 
 // Total number of CUDA blocks launched per kernel.
 // Should be a multiple of the SM count to ensure full device saturation.
 // Increasing beyond SM saturation provides no additional performance benefit.
-const GPU_GRID_SIZE: u32 = 128;
+const GPU_GRID_SIZE: u32 = GPU_SM_COUNT * 16;
 
 // Number of threads per CUDA block.
 // Must be a multiple of 32 (warp size).
