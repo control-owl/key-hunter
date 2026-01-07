@@ -1,5 +1,5 @@
 // authors = ["Control Owl <c0ntr01-_-0w1[at]r-o0-t[dot]wtf>"]
-// license = "CC-BY-NC-ND-4.0 [2025] Control Owl"
+// license = "MIT [2025] Control Owl"
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
