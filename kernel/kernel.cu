@@ -1487,110 +1487,263 @@ extern "C" __global__ void generate_and_check_keys(
     // }
 
     // ======= 3. Add to jacob cords =======
+        // ======= 3. Add to jacob cords =======
     JacobianPoint P;
     copyInt(pubX, P.X);
     copyInt(pubY, P.Y);
     copyInt(_1_CONSTANT, P.Z);
-    
 
-    for (uint32_t j = 0; j < keys_per_thread; ++j) {
-        __uint128_t current_index = i0 + j;
+    // Fast path: batch inversion if keys_per_thread is small enough
+    if (keys_per_thread <= MAX_KEYS_PER_THREAD) {
+        const uint32_t n = (uint32_t)keys_per_thread;
 
-        if (current_index >= base_i + count) return;
-        if (*out_found_index != ULLONG_MAX) return;
+        // Store Jacobian points for all j in [0, n)
+        unsigned int Xs[MAX_KEYS_PER_THREAD][8];
+        unsigned int Ys[MAX_KEYS_PER_THREAD][8];
+        unsigned int Zs[MAX_KEYS_PER_THREAD][8];
 
-        unsigned int affX[8], affY[8];
-        jacobian_to_affine(P, affX, affY);
-        
-        unsigned int yParity = affY[7] & 1u;
+        JacobianPoint Pcur = P;
 
-        // ======= 4. SHA256 =======
-        unsigned int sha_digest[8];
-        sha256::sha256PublicKeyCompressed(affX, yParity, sha_digest);
-
-        uint8_t sha_out[32];
-    
         #pragma unroll
-        for (int i = 0; i < 8; ++i) {
-            uint32_t word = sha_digest[i];
-            int off = i * 4;
-            sha_out[off + 0] = (word >> 24) & 0xff;
-            sha_out[off + 1] = (word >> 16) & 0xff;
-            sha_out[off + 2] = (word >>  8) & 0xff;
-            sha_out[off + 3] =  word        & 0xff;
-        }
+        for (uint32_t j = 0; j < n; ++j) {
+            __uint128_t current_index = i0 + j;
+            if (current_index >= base_i + count) return;
+            if (*out_found_index != ULLONG_MAX) return;
 
-        // if (debug) {
-        //     printf("SHA256 digest:      ");
-        //     for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
-        //     printf("\n");
-        // }
+            // Save this Jacob point
+            copyInt(Pcur.X, Xs[j]);
+            copyInt(Pcur.Y, Ys[j]);
+            copyInt(Pcur.Z, Zs[j]);
 
-        unsigned int sha_words[8];
-    
-        #pragma unroll
-        for (int i = 0; i < 8; ++i) {
-            int off = i * 4;
-            sha_words[i] =
-                (uint32_t)sha_out[off + 0] |
-                (uint32_t)sha_out[off + 1] << 8 |
-                (uint32_t)sha_out[off + 2] << 16 |
-                (uint32_t)sha_out[off + 3] << 24;
-        }
-
-
-        // ======= 5. RIPEMD160 =======
-        unsigned int ripe_words[5];
-        ripemd160::ripemd160sha256(sha_words, ripe_words);
-    
-        // if (debug) {
-        //     printf("ripe_words (LE words): ");
-        //     for (int i = 0; i < 5; i++)
-        //        printf("%08x ", ripe_words[i]);
-        //     printf("\n");
-        // }
-    
-        uint8_t hash160[20];
-    
-        #pragma unroll
-        for (int i = 0; i < 5; ++i) {
-            uint32_t w = ripe_words[i];
-            int off = i * 4;
-    
-            hash160[off + 0] =  w        & 0xff;
-            hash160[off + 1] = (w >>  8) & 0xff;
-            hash160[off + 2] = (w >> 16) & 0xff;
-            hash160[off + 3] = (w >> 24) & 0xff;
-        }   
-    
-        // if (debug) {
-        //     printf("Address hash: ");
-        //     for (int b = 0; b < 20; ++b) printf("%02x", hash160[b]);
-        //     printf("\n");
-        // }
-    
-    
-        // ======= CHECK =======
-        bool match = true;
-        #pragma unroll
-        for (int k = 0; k < 20; ++k) {
-            if (hash160[k] != TARGET_H160[k]) {
-                match = false;
-                break;
+            // Move to next point if needed
+            if (j + 1 < n) {
+                jacobianAddG(Pcur);
             }
         }
-    
-    
-        // ======= CONGRATULATION =======
-        if (match) {
-            atomicExch(out_found_index, (unsigned long long)(current_k + j));
-            return;
+
+        // Batch inversion of all Zs[j]
+        // Prefix products
+        unsigned int prefix[MAX_KEYS_PER_THREAD][8];
+        unsigned int acc[8];
+        copyInt(_1_CONSTANT, acc);  // acc = 1
+
+        #pragma unroll
+        for (uint32_t j = 0; j < n; ++j) {
+            copyInt(acc, prefix[j]);          // prefix[j] = product of Zs[0..j-1], prefix[0]=1
+            
+            unsigned int tmp[8];
+            MMP(acc, Zs[j], tmp);             // acc *= Zs[j]
+            
+            copyInt(tmp, acc);
         }
 
-        if (j + 1 < keys_per_thread) {
-            jacobianAddG(P);
+        // acc = product(Zs[0..n-1]) ; invert once
+        IMP(acc);  // acc = 1 / product(Zs)
+
+        // Now walk backwards and compute each Zinv[j]
+        unsigned int Zinv[MAX_KEYS_PER_THREAD][8];
+
+        for (int j = (int)n - 1; j >= 0; --j) {
+            unsigned int tmp[8];
+            // Zinv[j] = prefix[j] * acc
+            MMP(prefix[j], acc, tmp);
+            copyInt(tmp, Zinv[j]);
+
+            // acc = acc * Zs[j]  (for previous element)
+            MMP(acc, Zs[j], tmp);
+            copyInt(tmp, acc);
+        }
+
+        // Now we have Xs, Ys, Zinv → convert to affine, hash, compare
+        #pragma unroll
+        for (uint32_t j = 0; j < n; ++j) {
+            __uint128_t current_index = i0 + j;
+            if (current_index >= base_i + count) return;
+            if (*out_found_index != ULLONG_MAX) return;
+
+            // Compute affine X, Y from Jacobian + Zinv
+            unsigned int Zinv2[8], Zinv3[8];
+            unsigned int affX[8], affY[8];
+
+            MMP(Zinv[j], Zinv[j], Zinv2);      // Zinv^2
+            MMP(Zinv2, Zinv[j], Zinv3);        // Zinv^3
+
+            MMP(Xs[j], Zinv2, affX);           // X / Z^2
+            MMP(Ys[j], Zinv3, affY);           // Y / Z^3
+
+            unsigned int yParity = affY[7] & 1u;
+
+            // ======= 4. SHA256 =======
+            unsigned int sha_digest[8];
+            sha256::sha256PublicKeyCompressed(affX, yParity, sha_digest);
+
+            uint8_t sha_out[32];
+            #pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                uint32_t word = sha_digest[i];
+                int off = i * 4;
+                sha_out[off + 0] = (word >> 24) & 0xff;
+                sha_out[off + 1] = (word >> 16) & 0xff;
+                sha_out[off + 2] = (word >>  8) & 0xff;
+                sha_out[off + 3] =  word        & 0xff;
+            }
+
+            // if (debug) {
+            //     printf("SHA256 digest:      ");
+            //     for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
+            //     printf("\n");
+            // }
+
+            unsigned int sha_words[8];
+            #pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                int off = i * 4;
+                sha_words[i] =
+                    (uint32_t)sha_out[off + 0] |
+                    (uint32_t)sha_out[off + 1] << 8 |
+                    (uint32_t)sha_out[off + 2] << 16 |
+                    (uint32_t)sha_out[off + 3] << 24;
+            }
+
+            // ======= 5. RIPEMD160 =======
+            unsigned int ripe_words[5];
+            ripemd160::ripemd160sha256(sha_words, ripe_words);
+
+            // if (debug) {
+            //     printf("ripe_words (LE words): ");
+            //     for (int i = 0; i < 5; i++)
+            //        printf("%08x ", ripe_words[i]);
+            //     printf("\n");
+            // }
+
+            uint8_t hash160[20];
+            #pragma unroll
+            for (int i = 0; i < 5; ++i) {
+                uint32_t w32 = ripe_words[i];
+                int off = i * 4;
+                hash160[off + 0] =  w32        & 0xff;
+                hash160[off + 1] = (w32 >>  8) & 0xff;
+                hash160[off + 2] = (w32 >> 16) & 0xff;
+                hash160[off + 3] = (w32 >> 24) & 0xff;
+            }
+
+            // if (debug) {
+            //     printf("Address hash: ");
+            //     for (int b = 0; b < 20; ++b) printf("%02x", hash160[b]);
+            //     printf("\n");
+            // }
+
+            // ======= CHECK =======
+            bool match = true;
+            #pragma unroll
+            for (int k = 0; k < 20; ++k) {
+                if (hash160[k] != TARGET_H160[k]) {
+                    match = false;
+                    break;
+                }
+            }
+
+            // ======= CONGRATULATION =======
+            if (match) {
+                atomicExch(out_found_index, (unsigned long long)(current_k + j));
+                return;
+            }
+        }
+    } else {
+        // Fallback: original per-key path (safe, but slower)
+        for (uint32_t j = 0; j < keys_per_thread; ++j) {
+            __uint128_t current_index = i0 + j;
+
+            if (current_index >= base_i + count) return;
+            if (*out_found_index != ULLONG_MAX) return;
+
+            unsigned int affX[8], affY[8];
+            jacobian_to_affine(P, affX, affY);
+
+            unsigned int yParity = affY[7] & 1u;
+
+            // ======= 4. SHA256 =======
+            unsigned int sha_digest[8];
+            sha256::sha256PublicKeyCompressed(affX, yParity, sha_digest);
+
+            uint8_t sha_out[32];
+            #pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                uint32_t word = sha_digest[i];
+                int off = i * 4;
+                sha_out[off + 0] = (word >> 24) & 0xff;
+                sha_out[off + 1] = (word >> 16) & 0xff;
+                sha_out[off + 2] = (word >> 8) & 0xff;
+                sha_out[off + 3] =  word        & 0xff;
+            }
+
+            // if (debug) {
+            //     printf("SHA256 digest:      ");
+            //     for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
+            //     printf("\n");
+            // }
+
+            unsigned int sha_words[8];
+            #pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                int off = i * 4;
+                sha_words[i] =
+                    (uint32_t)sha_out[off + 0] |
+                    (uint32_t)sha_out[off + 1] << 8 |
+                    (uint32_t)sha_out[off + 2] << 16 |
+                    (uint32_t)sha_out[off + 3] << 24;
+            }
+
+            // ======= 5. RIPEMD160 =======
+            unsigned int ripe_words[5];
+            ripemd160::ripemd160sha256(sha_words, ripe_words);
+
+            // if (debug) {
+            //     printf("ripe_words (LE words): ");
+            //     for (int i = 0; i < 5; i++)
+            //        printf("%08x ", ripe_words[i]);
+            //     printf("\n");
+            // }
+
+            uint8_t hash160[20];
+            #pragma unroll
+            for (int i = 0; i < 5; ++i) {
+                uint32_t w32 = ripe_words[i];
+                int off = i * 4;
+                hash160[off + 0] =  w32        & 0xff;
+                hash160[off + 1] = (w32 >>  8) & 0xff;
+                hash160[off + 2] = (w32 >> 16) & 0xff;
+                hash160[off + 3] = (w32 >> 24) & 0xff;
+            }
+
+            // if (debug) {
+            //     printf("Address hash: ");
+            //     for (int b = 0; b < 20; ++b) printf("%02x", hash160[b]);
+            //     printf("\n");
+            // }
+
+            // ======= CHECK =======
+            bool match = true;
+            #pragma unroll
+            for (int k = 0; k < 20; ++k) {
+                if (hash160[k] != TARGET_H160[k]) {
+                    match = false;
+                    break;
+                }
+            }
+
+            // ======= CONGRATULATION =======
+            if (match) {
+                atomicExch(out_found_index, (unsigned long long)(current_k + j));
+                return;
+            }
+
+            if (j + 1 < keys_per_thread) {
+                jacobianAddG(P);
+            }
         }
     }
+
 }
 
 

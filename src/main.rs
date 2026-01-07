@@ -50,7 +50,7 @@ const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024; // 64 * 1024 = 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
 const GPU_TEST_MODE: bool = false;
-const GPU_PARALLEL_KEYS: u64 = 16;
+const GPU_PARALLEL_KEYS: u64 = 32;
 // Host (CPU)
 //  └── GPU_CHUNK_SIZE   ← how much work you give the GPU per launch
 //       └── GRID        ← how many blocks exist concurrently
