@@ -23,47 +23,55 @@ namespace ripemd160 {
 
 
 __constant__ bool DEBUG_TEST_MODE = false;
-#define MAX_KEYS_PER_THREAD 32
+#define MAX_KEYS_PER_THREAD 1024
+#define PRECOMPUTED_TABLE 128
 
 // ==================================================================================================
-
 
 // 0000000000000000000000000000000000000000000000800000000000001_000
 // __constant__ uint8_t TARGET_H160[20] = {
 //     0xbf, 0x57, 0x90, 0xb0, 0x2d, 0x67, 0xb2, 0x7d, 0x0b, 0x59, 
 //     0x47, 0x1f, 0xfc, 0x6d, 0x67, 0x0e, 0x40, 0xe1, 0x68, 0x01
 // };
-
+// 
 // 0000000000000000000000000000000000000000000000800000000001_000_000
 // __constant__ uint8_t TARGET_H160[20] = {
 //     0x48, 0x8d, 0x91, 0xab, 0xc9, 0x84, 0xf6, 0x5e, 0x44, 0x9f, 
 //     0xb5, 0xce, 0xae, 0x0d, 0x06, 0x8c, 0x6b, 0x13, 0x58, 0xd1
 // };
-
+// 
+// 1s
 // 0000000000000000000000000000000000000000000000800000000005_000_000
 // __constant__ uint8_t TARGET_H160[20] = {
 //     0xae, 0x69, 0xe5, 0x66, 0xaf, 0x52, 0xf6, 0x7f, 0xe3, 0x04, 
 //     0x3d, 0x69, 0x09, 0x42, 0x59, 0x1d, 0x71, 0xf5, 0x6b, 0x8a
 // };
-
+// 
+// 1s
 // // 0000000000000000000000000000000000000000000000800000000010_000_000
 // __constant__ uint8_t TARGET_H160[20] = {
 //     0xc7, 0x60, 0xc6, 0x4c, 0x65, 0x62, 0xab, 0x9e, 0xe2, 0xcc, 
 //     0xe2, 0x91, 0x8f, 0x09, 0xfc, 0x34, 0x4c, 0x96, 0x9b, 0xb4
 // };
-
+// 
 // 0000000000000000000000000000000000000000000000800000000050_000_000
-__constant__ uint8_t TARGET_H160[20] = {
-    0x84, 0xe5, 0xc7, 0x09, 0x61, 0xe4, 0x28, 0x74, 0x3d, 0xa4, 
-    0x42, 0xcb, 0x1d, 0x8b, 0x79, 0x4a, 0x61, 0x88, 0x1c, 0xe5
-};
-
-
-// Puzzle #72 priv key?
 // __constant__ uint8_t TARGET_H160[20] = {
-//     0xbf, 0x74, 0x13, 0xe8, 0xdf, 0x4e, 0x7a, 0x34, 0xce, 0x9d,
-//     0xc1, 0x3e, 0x2f, 0x26, 0x48, 0x78, 0x3e, 0xc5, 0x4a, 0xdb
+//     0x84, 0xe5, 0xc7, 0x09, 0x61, 0xe4, 0x28, 0x74, 0x3d, 0xa4, 
+//     0x42, 0xcb, 0x1d, 0x8b, 0x79, 0x4a, 0x61, 0x88, 0x1c, 0xe5
 // };
+// 
+// 39m 52s
+// 0000000000000000000000000000000000000000000000800000004_fff_fff_ff4
+// __constant__ uint8_t TARGET_H160[20] = {
+//     0xcb, 0xac, 0x2f, 0x71, 0xc1, 0x94, 0xf8, 0x9f, 0xa7, 0x55, 
+//     0x78, 0x8b, 0xd2, 0x7c, 0x0a, 0xc7, 0x67, 0xa4, 0x6d, 0x7a
+// };
+// 
+// Puzzle #72 priv key?
+__constant__ uint8_t TARGET_H160[20] = {
+    0xbf, 0x74, 0x13, 0xe8, 0xdf, 0x4e, 0x7a, 0x34, 0xce, 0x9d,
+    0xc1, 0x3e, 0x2f, 0x26, 0x48, 0x78, 0x3e, 0xc5, 0x4a, 0xdb
+};
 
 
 // ==================================================================================================
@@ -172,7 +180,7 @@ __constant__ unsigned int _1_CONSTANT[8] = {
     0x00000000, 0x00000000, 0x00000000, 0x00000001
 };
 
-__constant__ unsigned int PRECOMP_X[64][8] = {
+__constant__ unsigned int PRECOMP_X[PRECOMPUTED_TABLE][8] = {
     { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000 }, // 0G
     { 0x79be667e, 0xf9dcbbac, 0x55a06295, 0xce870b07, 0x029bfcdb, 0x2dce28d9, 0x59f2815b, 0x16f81798 }, // 1G
     { 0xc6047f94, 0x41ed7d6d, 0x3045406e, 0x95c07cd8, 0x5c778e4b, 0x8cef3ca7, 0xabac09b9, 0x5c709ee5 }, // 2G
@@ -237,9 +245,73 @@ __constant__ unsigned int PRECOMP_X[64][8] = {
     { 0x754e3239, 0xf325570c, 0xdbbf4a87, 0xdeee8a66, 0xb7f2b334, 0x79d468fb, 0xc1a50743, 0xbf56cc18 }, // 61G
     { 0x108443b9, 0x48d15535, 0x84a27133, 0x3f7fbd04, 0x3c4d66a9, 0x1706edec, 0xbf07f689, 0x4c04f299 }, // 62G
     { 0xe3e6bd10, 0x71a1e96a, 0xff57859c, 0x82d570f0, 0x33080066, 0x1d1c952f, 0x9fe26946, 0x91d9b9e8 }, // 63G
+    { 0xbf23c154, 0x2d16eab7, 0x0b1051ea, 0xf832823c, 0xfc4c6f1d, 0xcdbafd81, 0xe37918e6, 0xf874ef8b }, // 64G
+    { 0x186b483d, 0x056a0338, 0x26ae73d8, 0x8f732985, 0xc4ccb1f3, 0x2ba35f4b, 0x4cc47fdc, 0xf04aa6eb }, // 65G
+    { 0x079264c4, 0xb4bfcd7f, 0xe3a7b7b9, 0x2b6c439f, 0x3a5b3abc, 0xd29189bf, 0x7b54d781, 0xff03d722 }, // 66G
+    { 0xdf9d70a6, 0xb9876ce5, 0x44c98561, 0xf4be4f72, 0x5442e6d2, 0xb737d9c9, 0x1a832172, 0x4ce0963f }, // 67G
+    { 0x70e6b44a, 0x2ac6083a, 0xb673bacb, 0x5cb7ca55, 0x4b795b41, 0x6e702c1c, 0x980bb7b8, 0x7c78b8e9 }, // 68G
+    { 0x5edd5cc2, 0x3c51e87a, 0x497ca815, 0xd5dce0f8, 0xab52554f, 0x849ed899, 0x5de64c5f, 0x34ce7143 }, // 69G
+    { 0xc00be883, 0x0995d1e4, 0x4f1420dd, 0x3b90d344, 0x1fb66f68, 0x61c84a35, 0xf959c495, 0xa3be5440 }, // 70G
+    { 0x290798c2, 0xb6476830, 0xda12fe02, 0x287e9e77, 0x7aa3fba1, 0xc355b17a, 0x722d362f, 0x84614fba }, // 71G
+    { 0xa8f2c94e, 0x19d9d829, 0xecb4b17f, 0x84f42d8c, 0x1e988d69, 0x3df4a1fb, 0x65903286, 0x5ff5154c }, // 72G
+    { 0xaf3c423a, 0x95d9f5b3, 0x054754ef, 0xa150ac39, 0xcd29552f, 0xe3602573, 0x62dfdece, 0xf4053b45 }, // 73G
+    { 0x2773840f, 0xcf4e9e45, 0x9c052ceb, 0xbfbb7e9d, 0xfd6b072c, 0x4fbb8d47, 0x6e37b93c, 0x5c478840 }, // 74G
+    { 0x766dbb24, 0xd134e745, 0xcccaa28c, 0x99bf2749, 0x06bb66b2, 0x6dcf98df, 0x8d2fed50, 0xd884249a }, // 75G
+    { 0x96516a8f, 0x65774275, 0x278d0d74, 0x20a88df0, 0xac44bd64, 0xc7bae07c, 0x3fe397c5, 0xb3300b23 }, // 76G
+    { 0x59dbf46f, 0x8c94759b, 0xa21277c3, 0x3784f416, 0x45f7b44f, 0x6c596a58, 0xce92e666, 0x191abe3e }, // 77G
+    { 0x2ddf7bbc, 0xfe114e80, 0x7efe354d, 0xb9f95fe7, 0x0e7e555b, 0xd9114950, 0xbb3d3d98, 0x7058c8ae }, // 78G
+    { 0xf13ada95, 0x103c4537, 0x305e691e, 0x74e9a4a8, 0xdd647e71, 0x1a95e73c, 0xb62dc601, 0x8cfd87b8 }, // 79G
+    { 0xe9623bbe, 0xf1bf90ec, 0x0d7c744e, 0xd34659f0, 0x10e6e638, 0x63716127, 0x0ecd31e1, 0x4f87f62e }, // 80G
+    { 0x7754b4fa, 0x0e8aced0, 0x6d4167a2, 0xc59cca4c, 0xda1869c0, 0x6ebadfb6, 0x48855001, 0x5a88522c }, // 81G
+    { 0xe35bc6bb, 0x1b05b213, 0x0a37c28e, 0x771c6cb4, 0xbe89b397, 0xb454c8b5, 0x9e594fec, 0xc13b59df }, // 82G
+    { 0x948dcadf, 0x5990e048, 0xaa3874d4, 0x6abef9d7, 0x01858f95, 0xde8041d2, 0xa6828c99, 0xe2262519 }, // 83G
+    { 0x87c01e27, 0xd84da2db, 0xd3330a7f, 0x05a58614, 0xa1ecdbab, 0xdcfccd39, 0xe5626baa, 0xf6812379 }, // 84G
+    { 0x79624144, 0x50c76c16, 0x89c7b48f, 0x8202ec37, 0xfb224cf5, 0xac0bfa15, 0x70328a8a, 0x3d7c77ab }, // 85G
+    { 0x497c83c3, 0x9c76e56d, 0x070fb906, 0xbced4409, 0x9de2d0e2, 0x22575f22, 0xe4749682, 0xde46eeac }, // 86G
+    { 0x35140878, 0x34964b54, 0xb15b1606, 0x44d91548, 0x5a169772, 0x25b8847b, 0xb0dd0851, 0x37ec47ca }, // 87G
+    { 0xa8af384e, 0x794930e6, 0x3d81d3e1, 0xef66cdab, 0x16d1cfda, 0x1b054da5, 0xf7086353, 0xa80c44fe }, // 88G
+    { 0xd3cc30ad, 0x6b483e4b, 0xc79ce2c9, 0xdd8bc549, 0x93e947eb, 0x8df787b4, 0x42943d3f, 0x7b527eaf }, // 89G
+    { 0xeb49fd9f, 0x510469f4, 0xfe540e4b, 0x0664410f, 0x216cbbc9, 0x0d97aed6, 0x2af2e606, 0x110cc919 }, // 90G
+    { 0x1624d847, 0x80732860, 0xce1c78fc, 0xbfefe08b, 0x2b29823d, 0xb913f649, 0x3975ba0f, 0xf4847610 }, // 91G
+    { 0xde1d35cb, 0xc6308cc5, 0xb435db84, 0xa21605a7, 0xd3a6172d, 0x6511c68b, 0xf6639d49, 0xc8704818 }, // 92G
+    { 0x733ce80d, 0xa955a8a2, 0x6902c956, 0x33e62a98, 0x5192474b, 0x5af207da, 0x6df7b4fd, 0x5fc61cd4 }, // 93G
+    { 0x84df2e6e, 0x5e84cdff, 0x24120ca1, 0x8648961a, 0xc134bcd7, 0xd6f35919, 0xbf6dcd57, 0x10e682f2 }, // 94G
+    { 0x15d94412, 0x54945064, 0xcf1a1c33, 0xbbd3b49f, 0x8966c509, 0x2171e699, 0xef258dfa, 0xb81c045c }, // 95G
+    { 0x3f0e80e5, 0x74456d8f, 0x8fa64e04, 0x4b2eb72e, 0xa22eb53f, 0xe1efe3a4, 0x43933aca, 0x7f8cb0e3 }, // 96G
+    { 0xa1d0fcf2, 0xec9de675, 0xb612136e, 0x5ce70d27, 0x1c21417c, 0x9d2b8aaa, 0xac138599, 0xd0717940 }, // 97G
+    { 0x4752f854, 0x86208311, 0x39bf1c39, 0xd65f194d, 0x191110fd, 0x2e9122ab, 0xd637ab63, 0xef91e5b4 }, // 98G
+    { 0xe22fbe15, 0xc0af8ccc, 0x5780c073, 0x5f84dbe9, 0xa790bade, 0xe8245c06, 0xc7ca3733, 0x1cb36980 }, // 99G
+    { 0xed3bace2, 0x3c5e1765, 0x2e174c83, 0x5fb72bf5, 0x3ee306b3, 0x406a2689, 0x0221b4ce, 0xf7500f88 }, // 100G
+    { 0x311091dd, 0x9860e8e2, 0x0ee13473, 0xc1155f5f, 0x69635e39, 0x4704eaa7, 0x40094522, 0x46cfa9b3 }, // 101G
+    { 0x3049f7ff, 0xc71d744b, 0xd9bed6f4, 0x2dc6a289, 0x74e3a1b9, 0xd30671f8, 0x00e5d463, 0x89103c7e }, // 102G
+    { 0x34c1fd04, 0xd301be89, 0xb31c0442, 0xd3e6ac24, 0x883928b4, 0x5a934078, 0x1867d423, 0x2ec2dbdf }, // 103G
+    { 0x1880c9ad, 0x32fbb07e, 0x1fb52a68, 0x8d9d6fe6, 0xdb0df90e, 0xcd4c9483, 0x203f636e, 0xe00926dc }, // 104G
+    { 0xf219ea5d, 0x6b54701c, 0x1c14de5b, 0x557eb42a, 0x8d13f3ab, 0xbcd08aff, 0xcc2a5e6b, 0x049b8d63 }, // 105G
+    { 0x1fc757d3, 0x83e42507, 0x72310db3, 0x4c1e79f3, 0x888043b1, 0x7bcbe914, 0x90c7f04f, 0x8accb725 }, // 106G
+    { 0xd7b8740f, 0x74a8fbaa, 0xb1f683db, 0x8f45de26, 0x543a5490, 0xbca62708, 0x72369124, 0x69a0b448 }, // 107G
+    { 0x7e660bed, 0xa020e9cc, 0x20391cef, 0x85374576, 0x853b0f22, 0xb8925d5d, 0x81c5845b, 0xb834c21e }, // 108G
+    { 0x32d31c22, 0x2f8f6f0e, 0xf86f7c98, 0xd3a3335e, 0xad5bcd32, 0xabdd9428, 0x9fe4d309, 0x1aa824bf }, // 109G
+    { 0x3bb9aec1, 0xf1eb9ec7, 0xfa735fc4, 0xfcd0ab7c, 0x7b00f024, 0xa9728087, 0xf745ddaa, 0x42583d11 }, // 110G
+    { 0x7461f371, 0x914ab326, 0x71045a15, 0x5d9831ea, 0x8793d77c, 0xd59592c4, 0x340f86cb, 0xc18347b5 }, // 111G
+    { 0xbc82dd73, 0xe5161dba, 0x0884a36f, 0x2080d682, 0xffc274bf, 0x62fca8f9, 0xeb0aadf8, 0x2a8d733c }, // 112G
+    { 0xee079adb, 0x1df18600, 0x74356a25, 0xaa38206a, 0x6d716b2c, 0x3e67453d, 0x287698ba, 0xd7b2b2d6 }, // 113G
+    { 0xb74f0c16, 0x5b4a9435, 0x93cc3390, 0x96d66ad5, 0x88d6b130, 0xb16695e5, 0xbd95ec55, 0x7a93eab5 }, // 114G
+    { 0x16ec93e4, 0x47ec83f0, 0x467b1830, 0x2ee620f7, 0xe65de331, 0x874c9dc7, 0x2bfd8616, 0xba9da6b5 }, // 115G
+    { 0xfc6040fe, 0x245682cd, 0xf81eee19, 0x3a3af355, 0xef6cc374, 0xce143846, 0x9306fe7f, 0x8957f489 }, // 116G
+    { 0xeaa5f980, 0xc245f6f0, 0x38978290, 0xafa70b6b, 0xd8855897, 0xf98b6aa4, 0x85b96065, 0xd537bd99 }, // 117G
+    { 0xa7c0ea73, 0x95d87852, 0x53de8483, 0x3ccffdb3, 0x1dc81f9c, 0x32bb84a5, 0x3ec1775d, 0x0fadae00 }, // 118G
+    { 0x078c9407, 0x544ac132, 0x692ee191, 0x0a024399, 0x58ae0487, 0x7151342e, 0xa96c4b6b, 0x35a49f51 }, // 119G
+    { 0xdd5ba67c, 0xfb807824, 0xbd3ff25e, 0x9d1667fa, 0x89e7020e, 0x8e0becb7, 0x9caa00f5, 0x74adc826 }, // 120G
+    { 0x494f4be2, 0x19a1a770, 0x16dcd838, 0x431aea00, 0x01cdc8ae, 0x7a6fc688, 0x726578d9, 0x702857a5 }, // 121G
+    { 0x139ae46a, 0x1133f1f9, 0xd23f25ef, 0xba0f6dd8, 0x7bf7ddaf, 0x568a5fb9, 0xe0a3bfda, 0x73176237 }, // 122G
+    { 0xa598a803, 0x0da6d86c, 0x6bc7f2f5, 0x144ea549, 0xd28211ea, 0x58faa70e, 0xbf4c1e66, 0x5c1fe9b5 }, // 123G
+    { 0xf90b89d5, 0x3bdc724a, 0x685bb8c1, 0x2419bbf5, 0xb8ffea50, 0xec08422a, 0x9a7b09b1, 0x029471e3 }, // 124G
+    { 0xc4191636, 0x5abb2b5d, 0x09192f5f, 0x2dbeafec, 0x208f020f, 0x12570a18, 0x4dbadc3e, 0x58595997 }, // 125G
+    { 0x6df7b5a7, 0xa126a611, 0x2e1e0ba0, 0x1ad1a0f8, 0x9f055dd3, 0xc1c7e533, 0x6938ad32, 0xc494b319 }, // 126G
+    { 0x841d6063, 0xa586fa47, 0x5a724604, 0xda03bc5b, 0x92a2e0d2, 0xe0a36acf, 0xe4c73a55, 0x14742881 }, // 127G
 };
 
-__constant__ unsigned int PRECOMP_Y[64][8] = {
+__constant__ unsigned int PRECOMP_Y[PRECOMPUTED_TABLE][8] = {
     { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000 }, // 0G
     { 0x483ada77, 0x26a3c465, 0x5da4fbfc, 0x0e1108a8, 0xfd17b448, 0xa6855419, 0x9c47d08f, 0xfb10d4b8 }, // 1G
     { 0x1ae168fe, 0xa63dc339, 0xa3c58419, 0x466ceaee, 0xf7f63265, 0x3266d0e1, 0x236431a9, 0x50cfe52a }, // 2G
@@ -304,30 +376,75 @@ __constant__ unsigned int PRECOMP_Y[64][8] = {
     { 0x0673fb86, 0xe5bda30f, 0xb3cd0ed3, 0x04ea49a0, 0x23ee33d0, 0x197a695d, 0x0c5d9809, 0x3c536683 }, // 61G
     { 0x4e7b5dab, 0xa34fbcf9, 0xf055520d, 0x4db8c49f, 0xd60282d3, 0x2adfca55, 0x5b04403d, 0xb9581a9f }, // 62G
     { 0x59c9e0bb, 0xa394e76f, 0x40c0aa58, 0x379a3cb6, 0xa5a22839, 0x93e90c41, 0x67002af4, 0x920e37f5 }, // 63G
+    { 0x5cb3866f, 0xc3300373, 0x7ad928a0, 0xba5392e4, 0xc522fc54, 0x811e2f78, 0x4dc37efe, 0x66831d9f }, // 64G
+    { 0x3b952d32, 0xc67cf77e, 0x2e17446e, 0x204180ab, 0x21fb8090, 0x895138b4, 0xa4a797f8, 0x6e80888b }, // 65G
+    { 0x6f6f0e07, 0x84eada9f, 0x92999ee9, 0xc438d47e, 0xaa2c8068, 0xf1845197, 0xe3071c74, 0xb063c5e1 }, // 66G
+    { 0x55eb2daf, 0xd84d6ccd, 0x5f862b78, 0x5dc39d4a, 0xb1572227, 0x20ef9da2, 0x17b8c45c, 0xf2ba2417 }, // 67G
+    { 0x49ba3203, 0x048e06d8, 0x4173867a, 0xb5324be4, 0x0a0d0e64, 0x36da1675, 0x4ff98b2a, 0xae170cf8 }, // 68G
+    { 0xefae9c8d, 0xbc141306, 0x61e8cec0, 0x30c89ad0, 0xc13c66c0, 0xd17a2905, 0xcdc706ab, 0x7399a868 }, // 69G
+    { 0xecf9665e, 0x6eba4572, 0x0de652a3, 0x40600c73, 0x56efe24d, 0x228bfe6e, 0xa2043e77, 0x91c51bb7 }, // 70G
+    { 0xe38da76d, 0xcd440621, 0x988d00bc, 0xf79af25d, 0x5b29c094, 0xdb2a2314, 0x6d003afd, 0x41943e7a }, // 71G
+    { 0x3f1d72d2, 0x53a01dfc, 0x462e21f3, 0x36a8971d, 0xfad3da15, 0xd691efa4, 0xf9ddc14e, 0x86be1ebf }, // 72G
+    { 0xf98a3fd8, 0x31eb2b74, 0x9a93b0e6, 0xf35cfb40, 0xc8cd5aa6, 0x67a15581, 0xbc2feded, 0x498fd9c6 }, // 73G
+    { 0xcc264798, 0x30e10370, 0x74eaa876, 0xaa416cf5, 0x9afd48bb, 0xc2a2cfb4, 0x9d3a9532, 0x4e543c49 }, // 74G
+    { 0x744b1152, 0xeacbe5e3, 0x8dcc8879, 0x80da38b8, 0x97584a65, 0xfa06cedd, 0x2c924f97, 0xcbac5996 }, // 75G
+    { 0xbdacd9a0, 0x5fb9fb73, 0x108c0a99, 0xd567fba9, 0xb2f75ab3, 0x6207e155, 0x7f6bf255, 0xf1337ff0 }, // 76G
+    { 0xc534ad44, 0x175fbc30, 0x0f4ea6ce, 0x648309a0, 0x42ce739a, 0x7919798c, 0xd85e216c, 0x4a307f6e }, // 77G
+    { 0xec93e49c, 0x88fc8565, 0x2e754603, 0xb426bc0d, 0x90f34084, 0x91c470b4, 0xeb13f199, 0x399f4ec9 }, // 78G
+    { 0xe13817b4, 0x4ee14de6, 0x63bf4bc8, 0x08341f32, 0x6949e21a, 0x6a75c257, 0x0778419b, 0xdaf5733d }, // 79G
+    { 0x38a9743b, 0x4bc299e9, 0xe0fe953a, 0x8edaa929, 0xfe6043c9, 0xdd68844e, 0x53013eaf, 0xa44ee737 }, // 80G
+    { 0x30e93e86, 0x4e669d82, 0x224b967c, 0x3020b8fa, 0x8d1e4e35, 0x0b6cbcc5, 0x37a48b57, 0x841163a2 }, // 81G
+    { 0x21868874, 0xcc2cb5a7, 0x9c4d07d5, 0x6a198dec, 0x358eb4e6, 0x6a331b76, 0xc128b757, 0xcdd92acb }, // 82G
+    { 0xe491a425, 0x37f6e597, 0xd5d28a32, 0x24b1bc25, 0xdf9154ef, 0xbd2ef1d2, 0xcbba2cae, 0x5347d57e }, // 83G
+    { 0x90e9991a, 0x7304206a, 0x64ef6864, 0x4823be8a, 0x420e7685, 0x9e59e54e, 0x0e5ec95e, 0xe2a1ecee }, // 84G
+    { 0x100b610e, 0xc4ffb476, 0x0d5c1fc1, 0x33ef6f6b, 0x12507a05, 0x1f04ac57, 0x60afa5b2, 0x9db83437 }, // 85G
+    { 0x9807da34, 0x1a297ee8, 0x4653a557, 0x449ff8b2, 0x7ae69493, 0xfda866f8, 0xa7ed795b, 0x923b9722 }, // 86G
+    { 0xef0afbb2, 0x05620544, 0x8e1652c4, 0x8e8127fc, 0x6039e77c, 0x15c2378b, 0x7e7d15a0, 0xde293311 }, // 87G
+    { 0xa24d6d07, 0xede1cede, 0xcb32648c, 0x493af7de, 0xaf9915f0, 0x377906f1, 0xe3ab823d, 0x6581cc28 }, // 88G
+    { 0x8b378a22, 0xd827278d, 0x89c5e9be, 0x8f9508ae, 0x3c2ad462, 0x90358630, 0xafb34db0, 0x4eede0a4 }, // 89G
+    { 0x6e638df7, 0xa9105bbc, 0x34db14f9, 0x3706891d, 0x5d6406cb, 0xfcd76e17, 0x4c481324, 0xa6c8912b }, // 90G
+    { 0x68651cf9, 0xb6da903e, 0x0914448c, 0x6cd9d4ca, 0x896878f5, 0x282be4c8, 0xcc06e2a4, 0x04078575 }, // 91G
+    { 0xd03ce0b8, 0xef7aa8aa, 0x2aaf43c6, 0xb4e4ebf1, 0x823ac662, 0xe052fa27, 0x75d5e1f0, 0x201f1ded }, // 92G
+    { 0xf5435a2b, 0xd2badf7d, 0x485a4d8b, 0x8db9fcce, 0x3e1ef8e0, 0x201e4578, 0xc54673bc, 0x1dc5ea1d }, // 93G
+    { 0x1d1d201c, 0x7c29525c, 0xc5339c7d, 0x978e3b74, 0x8935e6d5, 0x7f30002a, 0x79b16d54, 0x5167625e }, // 94G
+    { 0xd56eb30b, 0x69463e72, 0x34f5137b, 0x73b84177, 0x434800ba, 0xcebfc685, 0xfc37bbe9, 0xefe4070d }, // 95G
+    { 0xcb66d7d7, 0x296cbc91, 0xe90b9c08, 0x485d01b3, 0x9501253a, 0xa65b53a4, 0xcb0289e2, 0xea5f404f }, // 96G
+    { 0xedd77f50, 0xbcb5a3ca, 0xb2e90737, 0x309667f2, 0x641462a5, 0x4070f3d5, 0x19212d39, 0xc197a629 }, // 97G
+    { 0xc80f1d85, 0x2659b418, 0x6ec19e9c, 0xe26ae4bd, 0xb6f36b14, 0xfbf54ad1, 0x654f3ee5, 0xc9e6c1c2 }, // 98G
+    { 0x0a855bab, 0xad5cd60c, 0x88b430a6, 0x9f53a1a7, 0xa3828915, 0x4964799b, 0xe43d06d7, 0x7d31da06 }, // 99G
+    { 0xe57a6f57, 0x1288ccff, 0xdcda5e8a, 0x7a1f87bf, 0x97bd17be, 0x084895d0, 0xfce17ad5, 0xe335286e }, // 100G
+    { 0x66db656f, 0x87d1f04f, 0xffd1f047, 0x88c06830, 0x871ec5a6, 0x4feee685, 0xbd80f0b1, 0x286d8374 }, // 101G
+    { 0xfae7bc16, 0x185fc1a6, 0x7f86709d, 0x01d2b66e, 0xdfefdefd, 0x1262bca4, 0xc7032f99, 0x470bef44 }, // 102G
+    { 0x09414685, 0xe97b1b59, 0x54bd46f7, 0x30174136, 0xd57f1cee, 0xb487443d, 0xc5321857, 0xba73abee }, // 103G
+    { 0xa20c096c, 0xf36367bf, 0x0b7f1c97, 0x50e28afe, 0x99ac0b24, 0xe3a90c27, 0x0e6db815, 0x548473cc }, // 104G
+    { 0x4cb95957, 0xe83d40b0, 0xf73af454, 0x4cccf6b1, 0xf4b08d3c, 0x07b27fb8, 0xd8c2962a, 0x400766d1 }, // 105G
+    { 0xb4d0e7ef, 0x521c1c81, 0x9297ff08, 0xe74df0bd, 0x9a859739, 0xbea9b37e, 0x2f80fd5d, 0xc15e76bd }, // 106G
+    { 0xfa779681, 0x28d9c92e, 0xe1010f33, 0x7ad4717e, 0xff15db5e, 0xd3c049b3, 0x411e0315, 0xeaa4593b }, // 107G
+    { 0x2d114a5e, 0xdb320cc9, 0x806527d1, 0xdaf1bbb9, 0x6a8fedc6, 0xf9e8ead4, 0x21eaef2c, 0x7208e409 }, // 108G
+    { 0x5f3032f5, 0x892156e3, 0x9ccd3d79, 0x15b9e1da, 0x2e6dac9e, 0x6f26e961, 0x118d14b8, 0x462e1661 }, // 109G
+    { 0x9ae0247b, 0x2342180c, 0x6af5b9dd, 0x4a6600d7, 0xcd14d9dd, 0x764d4726, 0x21ee1bae, 0xf2bb04cd }, // 110G
+    { 0x8ec0ba23, 0x8b96bec0, 0xcbdddcae, 0x0aa44254, 0x2eee1ff5, 0x0c986ea6, 0xb39847b3, 0xcc092ff6 }, // 111G
+    { 0xe5f28c3a, 0x044b1cac, 0x54a9b4bf, 0x719f02df, 0xae93a0ba, 0xe7389730, 0x1e786104, 0xf47797f0 }, // 112G
+    { 0x8dc2412a, 0xafe3be5c, 0x4c5f37e0, 0xecc5f9f6, 0xa446989a, 0xf04c4e25, 0xebaac479, 0xec1c8c1e }, // 113G
+    { 0x646fa5b5, 0xfcdad2d3, 0xbc306c9b, 0x6c15494a, 0x90ab454e, 0x65e5ec9e, 0x3b98e961, 0x1f5dc208 }, // 114G
+    { 0x5e463115, 0x0e62fb40, 0xd0e8c2a7, 0xca5804a3, 0x9d58186a, 0x50e49713, 0x9626778e, 0x25b0674d }, // 115G
+    { 0x28312a55, 0x765d0435, 0xf656a354, 0xb9c92684, 0xed8bd517, 0x407373fd, 0x5d4e075e, 0x32808785 }, // 116G
+    { 0xf65f5d3e, 0x292c2e08, 0x19a52839, 0x1c994624, 0xd784869d, 0x7e6ea67f, 0xb1804102, 0x4edc07dc }, // 117G
+    { 0xa26becc5, 0xea1819d3, 0x3f876ff4, 0x5961a83c, 0x19e16b89, 0xce982871, 0xf58513f8, 0xfb152bce }, // 118G
+    { 0xf3e03191, 0x69eb9b85, 0xd5404795, 0x539a5e68, 0xfa1fbd58, 0x3c064d24, 0x62b675f1, 0x94a3ddb4 }, // 119G
+    { 0xd6b83711, 0x6fa89fa1, 0xd0d6e193, 0xaaaf5a56, 0x42425d84, 0x290545f2, 0x94a0753a, 0x915b644c }, // 120G
+    { 0x42242a96, 0x9283a5f3, 0x39ba7f07, 0x5e36ba2a, 0xf925ce30, 0xd767ed6e, 0x55f4b031, 0x880d562c }, // 121G
+    { 0x00995e55, 0x5c8aabd2, 0x63fd2388, 0x33a12188, 0xb8a5ffbe, 0xb480ba0e, 0x3e6ec481, 0xa8991472 }, // 122G
+    { 0x204b5d6f, 0x84822c30, 0x7e4b4a71, 0x40737aec, 0x23fc63b6, 0x5b35f86a, 0x10026dbd, 0x2d864e6b }, // 123G
+    { 0x672bd987, 0xc7e383ba, 0x1aaa132d, 0x75f7515f, 0x1a652cb0, 0x86ee45d5, 0x7048c13f, 0xeb4785f6 }, // 124G
+    { 0x04f14351, 0xd0087efa, 0x49d245b3, 0x28984989, 0xd5caf945, 0x0f34bfc0, 0xed16e96b, 0x58fa9913 }, // 125G
+    { 0x9e2599b4, 0x20982535, 0xb290cf45, 0x325af0b4, 0xa81efa6b, 0x414a583e, 0xeb09520a, 0x981fdf32 }, // 126G
+    { 0x073867f5, 0x9c0659e8, 0x1904f9a1, 0xc7543698, 0xe62562d6, 0x744c169c, 0xe7a36de0, 0x1a8d6154 }, // 127G
 };
 
 
 // ==================================================================================================
 
-
-// __device__ __forceinline__ uint32_t rotate_left_32(uint32_t value, uint32_t shift) {
-//     shift &= 31;
-// 
-//     return (value << shift) | (value >> (32 - shift));
-// }
-// 
-// __device__ __forceinline__ uint64_t bit_reverse_71(uint64_t x) {
-//     uint64_t r = 0;
-// 
-//     #pragma unroll
-//     for (int i = 0; i < 71; ++i) {
-//         r = (r << 1) | (x & 1);
-// 
-//         x >>= 1;
-//     }
-// 
-//     return r;
-// }
 
 __device__ __forceinline__ bool isZero(const unsigned int a[8]) {
     #pragma unroll
@@ -1013,181 +1130,23 @@ __device__ __forceinline__ void jacobianMixedAdd(
 
 // ==================================================================================================
 
-// 6400K spped
-// __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8], const uint8_t scalar[32]) {
-//     // Initialize point to generator point in Jacobian coordinates
-//     unsigned int X[8], Y[8], Z[8];
-//     setZero(X);
-//     setZero(Y);
-//     setZero(Z);
-// 
-//     // Perform scalar multiplication
-//     for (int byte_idx = 0; byte_idx < 32; byte_idx++) {
-//         uint8_t byte = scalar[31 - byte_idx];
-//         for (int bit_idx = 7; bit_idx >= 0; bit_idx--) {
-//             // Double point
-//             unsigned int X2[8], Y2[8], Z2[8];
-//             jacobianDouble(X2, Y2, Z2, X, Y, Z);
-//             copyInt(X2, X);
-//             copyInt(Y2, Y);
-//             copyInt(Z2, Z);
-// 
-//             // Add point if bit is set
-//             bool bit = (byte >> bit_idx) & 1;
-//             if (bit) {
-//                 unsigned int tempX[8], tempY[8], tempZ[8];
-//                 jacobianMixedAdd(tempX, tempY, tempZ, X, Y, Z, PRECOMP_X[1], PRECOMP_Y[1]);
-//                 copyInt(tempX, X);
-//                 copyInt(tempY, Y);
-//                 copyInt(tempZ, Z);
-//             }
-//         }
-//     }
-// 
-//     // Convert to affine
-//     if (isZero(Z)) {
-//         setZero(pubX);
-//         setZero(pubY);
-//         return;
-//     }
-// 
-//     unsigned int denominator[8], inv_z[8];
-//     SMP(Z, denominator); // denom = Z²
-//     copyInt(Z, inv_z);
-//     IMP(inv_z); // inv_z = 1/Z
-//     IMP(denominator); // denom = 1/Z²
-//     MMP(X, denominator, pubX); // x = X / Z²
-// 
-//     unsigned int temp[8];
-//     MMP(Y, denominator, temp); // temp = Y / Z²
-//     MMP(temp, inv_z, pubY); // y = Y / Z³
-// }
-
-// Fixed-base scalar multiplication: Q = k * G
-// 8493K spped
-// __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],unsigned int pubY[8],const uint8_t scalar[32]) {
-//     // Result R in Jacobian coordinates, start at infinity (Z = 0)
-//     unsigned int RX[8], RY[8], RZ[8];
-//     setZero(RX);
-//     setZero(RY);
-//     setZero(RZ);  // Z==0 point at infinity
-// 
-//     // Process scalar in 4-bit windows, MSB window → LSB window.
-//     // Window index w = 0..63
-//     // Window w contains bits: 255 - 4*w down to 252 - 4*w (inclusive).
-//     for (int w = 0; w < 64; ++w) {
-//         // 1) R = 16 * R (4 doublings) if R is not infinity
-//         if (!isZero(RZ)) {
-//             unsigned int X2[8], Y2[8], Z2[8];
-// 
-//             jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
-//             copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
-// 
-//             jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
-//             copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
-// 
-//             jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
-//             copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
-// 
-//             jacobianDouble(X2, Y2, Z2, RX, RY, RZ);
-//             copyInt(X2, RX); copyInt(Y2, RY); copyInt(Z2, RZ);
-//         }
-// 
-//         // 2) Extract 4 bits for this window from the little-endian scalar
-//         // do this in tje safest possible way: gather 4 bits individually.
-//         uint8_t nibble = 0;
-// 
-//         // bit_pos = global bit index (0..255), where 0 is LSB scalar[0]
-//         // We want bits: 255 - 4*w, 254 - 4*w, 253 - 4*w, 252 - 4*w
-//         for (int b = 0; b < 4; ++b) {
-//             int bit_pos = 255 - (w * 4 + b);
-//             int byte_idx = bit_pos >> 3;          // / 8
-//             int bit_in_byte = bit_pos & 7;        // % 8
-// 
-//             uint8_t byte = scalar[byte_idx];
-//             uint8_t bit = (byte >> bit_in_byte) & 0x01u;
-//             // Build nibble from MSB to LSB: first bit becomes bit 3, etc.
-//             nibble = (uint8_t)((nibble << 1) | bit);
-//         }
-// 
-//         if (nibble == 0) {
-//             continue;  // this window contributes nothing
-//         }
-// 
-//         // 3) Add nibble * G using your precomputed table.
-//         //    i have PRECOMP_X[64][8], PRECOMP_Y[64][8] for 0G..63G.
-//         //    Here we only use 1..15 for a 4-bit window
-//         const unsigned int* Px = PRECOMP_X[nibble];  // safe: 1..15
-//         const unsigned int* Py = PRECOMP_Y[nibble];
-// 
-//         if (isZero(RZ)) {
-//             // R is infinity → R = nibble*G (affine point)
-//             copyInt(Px, RX);
-//             copyInt(Py, RY);
-//             copyInt(_1_CONSTANT, RZ);  // Z = 1
-//         } else {
-//             unsigned int X3[8], Y3[8], Z3[8];
-//             jacobianMixedAdd(X3, Y3, Z3,
-//                              RX, RY, RZ,
-//                              Px, Py);
-//             copyInt(X3, RX);
-//             copyInt(Y3, RY);
-//             copyInt(Z3, RZ);
-//         }
-//     }
-// 
-//     // 4) Convert final R to affine (pubX, pubY)
-//     if (isZero(RZ)) {
-//         setZero(pubX);
-//         setZero(pubY);
-//         return;
-//     }
-// 
-//     unsigned int Zinv[8];
-//     copyInt(RZ, Zinv);
-//     IMP(Zinv);  // Zinv = 1/Z
-// 
-//     unsigned int Zinv2[8];
-//     MMP(Zinv, Zinv, Zinv2);    // Zinv^2
-// 
-//     unsigned int Zinv3[8];
-//     MMP(Zinv2, Zinv, Zinv3);   // Zinv^3
-// 
-//     MMP(RX, Zinv2, pubX);      // X / Z^2
-//     MMP(RY, Zinv3, pubY);      // Y / Z^3
-// }
-
-// Fixed-base scalar multiplication: Q = k * G
-// scalar[32] is LITTLE-ENDIAN as you currently fill it:
-//   priv[i] = (current_k >> (8 * i)) & 0xFF;
-// Bit index 0  = LSB of scalar[0]
-// Bit index 255 = MSB of scalar[31]
-//
-// 5-bit window method:
-// - Total bits = 256
-// - First (top) window uses 1 bit (bit 255)
-// - Remaining 51 windows use 5 bits each
-//   → windows: [1, 5, 5, ..., 5] bits, total 1 + 51*5 = 256
-// For each window after the first, we do `window_size` doublings, then add `window_value * G`.
-__device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],
-                                                     unsigned int pubY[8],
-                                                     const uint8_t scalar[32]) {
+__device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8], unsigned int pubY[8], const uint8_t scalar[32]) {
     // R = point at infinity in Jacobian coords (Z = 0)
     unsigned int RX[8], RY[8], RZ[8];
     setZero(RX);
     setZero(RY);
     setZero(RZ);
 
-    const int total_bits = 256;
-    const int base_window_size = 5;
+    const int total_bits       = 256;
+    const int base_window_size = 7;
 
-    // First window size (top) can be smaller than base if total_bits % base != 0
-    int first_window_bits = total_bits % base_window_size; // 256 % 5 = 1
+    // 256 = 4 + 36*7
+    int first_window_bits = total_bits % base_window_size; // 256 % 7 = 4
     if (first_window_bits == 0) {
         first_window_bits = base_window_size;
     }
 
-    int num_windows = (total_bits - first_window_bits) / base_window_size + 1; // 52 windows
+    int num_windows = (total_bits - first_window_bits) / base_window_size + 1; // 43 windows
     int bit_pos = total_bits - 1;  // start at bit 255
 
     for (int w = 0; w < num_windows; ++w) {
@@ -1207,7 +1166,6 @@ __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],
         }
 
         // 2) Extract this window's value from scalar (little-endian)
-        //    We build the value by reading bits from MSB to LSB of this window.
         //    Window covers bits [bit_pos .. bit_pos - window_size + 1].
         uint8_t win = 0;
 
@@ -1230,9 +1188,8 @@ __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],
             continue; // no addition needed for this window
         }
 
-        // 3) Add win * G using your precomputed table:
-        //    PRECOMP_X[0..63], PRECOMP_Y[0..63]
-        //    We use 1..31 here (5-bit window).
+        // 3) Add win * G using precomputed table PRECOMP_[0..127] 
+        // win is in [1..127] here (for 7-bit window)
         const unsigned int* Px = PRECOMP_X[win];
         const unsigned int* Py = PRECOMP_Y[win];
 
@@ -1272,7 +1229,6 @@ __device__ __forceinline__ void scalarMultiplication(unsigned int pubX[8],
     MMP(RX, Zinv2, pubX);   // X / Z^2
     MMP(RY, Zinv3, pubY);   // Y / Z^3
 }
-
 
 __device__ __forceinline__ void getCompressedPubKey(uint8_t *output, const unsigned int x[8], const unsigned int y[8]) {
     // HSB
@@ -1494,6 +1450,7 @@ extern "C" __global__ void generate_and_check_keys(
     copyInt(_1_CONSTANT, P.Z);
 
     // Fast path: batch inversion if keys_per_thread is small enough
+
     if (keys_per_thread <= MAX_KEYS_PER_THREAD) {
         const uint32_t n = (uint32_t)keys_per_thread;
 
@@ -1540,36 +1497,29 @@ extern "C" __global__ void generate_and_check_keys(
         // acc = product(Zs[0..n-1]) ; invert once
         IMP(acc);  // acc = 1 / product(Zs)
 
-        // Now walk backwards and compute each Zinv[j]
-        unsigned int Zinv[MAX_KEYS_PER_THREAD][8];
-
+        // Now walk backwards and, on the fly, compute Zinv_j and hash
         for (int j = (int)n - 1; j >= 0; --j) {
-            unsigned int tmp[8];
-            // Zinv[j] = prefix[j] * acc
-            MMP(prefix[j], acc, tmp);
-            copyInt(tmp, Zinv[j]);
-
-            // acc = acc * Zs[j]  (for previous element)
-            MMP(acc, Zs[j], tmp);
-            copyInt(tmp, acc);
-        }
-
-        // Now we have Xs, Ys, Zinv → convert to affine, hash, compare
-        #pragma unroll
-        for (uint32_t j = 0; j < n; ++j) {
-            __uint128_t current_index = i0 + j;
+            __uint128_t current_index = i0 + (uint32_t)j;
             if (current_index >= base_i + count) return;
             if (*out_found_index != ULLONG_MAX) return;
 
-            // Compute affine X, Y from Jacobian + Zinv
-            unsigned int Zinv2[8], Zinv3[8];
+            unsigned int Zinv[8], Zinv2[8], Zinv3[8];
             unsigned int affX[8], affY[8];
+            unsigned int tmp[8];
 
-            MMP(Zinv[j], Zinv[j], Zinv2);      // Zinv^2
-            MMP(Zinv2, Zinv[j], Zinv3);        // Zinv^3
+            // Zinv_j = prefix[j] * acc
+            MMP(prefix[j], acc, Zinv);
 
-            MMP(Xs[j], Zinv2, affX);           // X / Z^2
-            MMP(Ys[j], Zinv3, affY);           // Y / Z^3
+            // acc = acc * Zs[j] (for previous element)
+            MMP(acc, Zs[j], tmp);
+            copyInt(tmp, acc);
+
+            // Compute affine X, Y from Jacobian + Zinv_j
+            MMP(Zinv, Zinv, Zinv2);      // Zinv^2
+            MMP(Zinv2, Zinv, Zinv3);     // Zinv^3
+
+            MMP(Xs[j], Zinv2, affX);     // X / Z^2
+            MMP(Ys[j], Zinv3, affY);     // Y / Z^3
 
             unsigned int yParity = affY[7] & 1u;
 
@@ -1588,12 +1538,6 @@ extern "C" __global__ void generate_and_check_keys(
                 sha_out[off + 3] =  word        & 0xff;
             }
 
-            // if (debug) {
-            //     printf("SHA256 digest:      ");
-            //     for (int b = 0; b < 32; ++b) printf("%02x", sha_out[b]);
-            //     printf("\n");
-            // }
-
             unsigned int sha_words[8];
             #pragma unroll
             for (int i = 0; i < 8; ++i) {
@@ -1609,13 +1553,6 @@ extern "C" __global__ void generate_and_check_keys(
             unsigned int ripe_words[5];
             ripemd160::ripemd160sha256(sha_words, ripe_words);
 
-            // if (debug) {
-            //     printf("ripe_words (LE words): ");
-            //     for (int i = 0; i < 5; i++)
-            //        printf("%08x ", ripe_words[i]);
-            //     printf("\n");
-            // }
-
             uint8_t hash160[20];
             #pragma unroll
             for (int i = 0; i < 5; ++i) {
@@ -1627,12 +1564,6 @@ extern "C" __global__ void generate_and_check_keys(
                 hash160[off + 3] = (w32 >> 24) & 0xff;
             }
 
-            // if (debug) {
-            //     printf("Address hash: ");
-            //     for (int b = 0; b < 20; ++b) printf("%02x", hash160[b]);
-            //     printf("\n");
-            // }
-
             // ======= CHECK =======
             bool match = true;
             #pragma unroll
@@ -1643,7 +1574,6 @@ extern "C" __global__ void generate_and_check_keys(
                 }
             }
 
-            // ======= CONGRATULATION =======
             if (match) {
                 atomicExch(out_found_index, (unsigned long long)(current_k + j));
                 return;

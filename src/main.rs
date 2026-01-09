@@ -11,7 +11,7 @@ const TARGET_ENCODED: [u8; 20] = [
 ];
 
 // Search mode: Sequence or PCG
-const SEQUENCE_MODE: bool = true;
+const SEQUENCE_MODE: bool = false;
 
 // Define only the start and the bit-size; derive end at runtime
 const RANGE_START: u128 = 0x800000000000000000;
@@ -50,7 +50,7 @@ const CPU_CHUNK_SIZE: u128 = (CPU_PARALLEL_KEYS as u128) * 1024; // 64 * 1024 = 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
 const GPU_TEST_MODE: bool = false;
-const GPU_PARALLEL_KEYS: u32 = 32; // 32 MAX
+const GPU_PARALLEL_KEYS: u32 = 1024;
 // Host (CPU)
 //  └── GPU_CHUNK_SIZE   ← how much work you give the GPU per launch
 //       └── GRID        ← how many blocks exist concurrently
@@ -67,8 +67,8 @@ const GPU_SM_COUNT: u32 = 16; // NVIDIA GeForce GTX 1650 Mobile
 // but excessively large chunks can distort benchmarks and increase latency.
 // This value should be large enough to amortize overhead, but small enough
 // to complete within a few seconds for accurate throughput measurement.
-// GPU_CHUNK_SIZE=grid⋅block⋅GPU_PARALLEL_KEYS
 // const GPU_CHUNK_SIZE: u128 = 1024 * 96 * GPU_SM_COUNT as u128;
+//
 const GPU_CHUNK_SIZE: u128 = (GPU_GRID_SIZE * GPU_BLOCK_SIZE * GPU_PARALLEL_KEYS) as u128;
 
 // Total number of CUDA blocks launched per kernel.
@@ -79,7 +79,7 @@ const GPU_GRID_SIZE: u32 = GPU_BLOCK_SIZE * 2;
 // Number of threads per CUDA block.
 // Must be a multiple of 32 (warp size).
 // Controls occupancy, register pressure, and SM utilization.
-const GPU_BLOCK_SIZE: u32 = (GPU_SM_COUNT * 2) * 2;
+const GPU_BLOCK_SIZE: u32 = (GPU_SM_COUNT * 2) * 4;
 
 // -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
@@ -214,55 +214,78 @@ impl GpuSolver {
     }
 
     fn search_batch(&self, start_i: u128) -> Result<Option<u128>, Box<dyn Error>> {
+        // --- Resolve kernel ---
         let func = self.module.get_function("generate_and_check_keys")?;
 
-        let search_mode = SEQUENCE_MODE;
-
-        let range_start: u128 = if GPU_TEST_MODE { 1 } else { RANGE_START };
-        let block: u32 = if GPU_TEST_MODE { 1 } else { GPU_BLOCK_SIZE };
-        let grid: u32 = if GPU_TEST_MODE { 1 } else { GPU_GRID_SIZE };
-        let parallel_keys: u64 = if GPU_TEST_MODE {
-            1u64
+        // --- Resolve constants once ---
+        let (search_mode, range_start, block, grid, parallel_keys) = if GPU_TEST_MODE {
+            (SEQUENCE_MODE, 1u128, 1u32, 1u32, 1u64)
         } else {
-            GPU_PARALLEL_KEYS as u64
+            (
+                SEQUENCE_MODE,
+                RANGE_START,
+                GPU_BLOCK_SIZE,
+                GPU_GRID_SIZE,
+                GPU_PARALLEL_KEYS as u64,
+            )
         };
 
-        let a_val: u128 = A_CONST;
-        let b_val: u128 = B_CONST;
+        // --- Split it, then hit it :D ---
+        let start_lo = start_i as u64;
+        let start_hi = (start_i >> 64) as u64;
+
+        let a_val = A_CONST;
+        let a_lo = a_val as u64;
+        let a_hi = (a_val >> 64) as u64;
+
+        let b_val = B_CONST;
+        let b_lo = b_val as u64;
+        let b_hi = (b_val >> 64) as u64;
+
+        let range_lo = range_start as u64;
+        let range_hi = (range_start >> 64) as u64;
+
+        let chunk_size = GPU_CHUNK_SIZE as u64;
 
         let stream = &self.stream;
+
+        // --- Kernel launch ---
         unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
                 search_mode,
                 parallel_keys,
-                start_i as u64,               // low
-                (start_i >> 64) as u64,       // high
-                GPU_CHUNK_SIZE as u64,
-                a_val as u64,                 // low
-                (a_val >> 64) as u64,         // high
-                b_val as u64,                 // low
-                (b_val >> 64) as u64,         // high
-                range_start as u64,           // low
-                (range_start >> 64) as u64,   // high
+                start_lo,
+                start_hi,
+                chunk_size,
+                a_lo,
+                a_hi,
+                b_lo,
+                b_hi,
+                range_lo,
+                range_hi,
                 self.found_buffer.as_device_ptr()
             ))?;
         }
 
+        // --- Synchronize once ---
         self.stream.synchronize()?;
 
+        // --- Read result ---
         let mut host_found = [0u64; 1];
         self.found_buffer.copy_to(&mut host_found)?;
 
-        if host_found[0] == u64::MAX {
+        let found = host_found[0];
+
+        // --- Decode result ---
+        if found == u64::MAX {
             Ok(None)
         } else {
-            let found_i = host_found[0] as u128;
+            let found_i = found as u128;
 
             let actual_key = if search_mode {
                 found_i
             } else {
-                let x = permute_index(found_i);
-                RANGE_START + x
+                RANGE_START + permute_index(found_i)
             };
 
             Ok(Some(actual_key))
@@ -295,124 +318,6 @@ fn permute_index(i: u128) -> u128 {
         y
     }
 }
-
-// fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, num_threads: usize) {
-//     let dash = DASHBOARD.lock().unwrap();
-//
-//     let low = TOTAL_CHECKED_LOW.load(Ordering::Relaxed);
-//     let high = TOTAL_CHECKED_HIGH.load(Ordering::Relaxed);
-//     let total_checked_u128 = (high as u128) << 64 | (low as u128);
-//
-//     let elapsed = global_start.elapsed();
-//     let elapsed_secs = elapsed.as_secs_f64();
-//
-//     let overall_speed_kps = if elapsed_secs > 0.1 {
-//         total_checked_u128 as f64 / elapsed_secs / 1_000.0
-//     } else {
-//         0.0
-//     };
-//
-//     let h = elapsed.as_secs() / 3600;
-//     let m = (elapsed.as_secs() % 3600) / 60;
-//     let s = elapsed.as_secs() % 60;
-//
-//     let total_keys = end - start + 1;
-//     let progress = if total_keys > 0 {
-//         total_checked_u128 as f64 / total_keys as f64
-//     } else {
-//         0.0
-//     };
-//     let progress_percent = progress * 100.0;
-//
-//     // progress bar 50 chars wide
-//     let bar_width = 50;
-//     let filled = (progress * bar_width as f64).min(bar_width as f64).max(0.0) as usize;
-//     let mut bar = String::new();
-//     for i in 0..bar_width {
-//         if i < filled {
-//             bar.push('█');
-//         } else {
-//             bar.push('░');
-//         }
-//     }
-//
-//     // ANSI colors
-//     let reset = "\x1b[0m";
-//     let cpu_color = "\x1b[34m"; // blue
-//     let gpu_color = "\x1b[32m"; // green
-//
-//     print!("\x1B[2J\x1B[H");
-//     println!("╔═════════════════════════════════════════╗");
-//     println!("║     KEY HUNTER - BITCOIN PUZZLE #72     ║");
-//     println!("╚═════════════════════════════════════════╝");
-//     println!("Target Address: {}", TARGET_ADDRESS);
-//     println!("Range : {:019X} ──▶ {:019X}", start, end);
-//     println!("Threads : {}", num_threads);
-//     println!(
-//         "Parallel tasks: {}\n",
-//         if mode == "CPU" {
-//             CPU_PARALLEL_KEYS
-//         } else {
-//             GPU_PARALLEL_KEYS as usize
-//         }
-//     );
-//
-//     for t in 0..num_threads {
-//         let status = &dash[t];
-//         let idx_hex = format!("{:019X}", status.last_i);
-//
-//         let label = match status.worker_type {
-//             WorkerType::CPU => "CPU",
-//             WorkerType::GPU => "GPU",
-//         };
-//
-//         println!(
-//             "{} {:2} Index: {} Current key: {} Checked: {:8}K keys Speed: {:6.1}K keys/s",
-//             label,
-//             t,
-//             idx_hex,
-//             status.key_hex,
-//             status.checked / 1_000,
-//             status.speed_kps
-//         );
-//
-//         // println!(
-//         //     "{} {:2} Index: {} Current key: {} Checked: {:8}K keys Speed: {:6.1}K keys/s",
-//         //     mode,
-//         //     t,
-//         //     idx_hex,
-//         //     status.key_hex,
-//         //     status.checked / 1_000,
-//         //     status.speed_kps
-//         // );
-//     }
-//
-//     println!(
-//         "\n╔════════════════════════════════════════════════════════════════════════════════════════════════╗"
-//     );
-//     println!(
-//         "║ TOTAL CHECKED: {:12}K keys │ OVERALL SPEED: {:8.1}K keys/s │ Elapsed: {:4}h {:3}m {:3}s ║",
-//         (total_checked_u128) / 1_000,
-//         overall_speed_kps,
-//         h,
-//         m,
-//         s
-//     );
-//     println!(
-//         "╚════════════════════════════════════════════════════════════════════════════════════════════════╝"
-//     );
-//
-//     let _ = io::stdout().flush();
-// }
-
-// fn save_thread_checkpoint(thread_id: u64, index: u128) {
-//     let path = format!("{}/CPU{}", STATUS_DIR, thread_id);
-//     let hex = format!("{:X}", index);
-//
-//     if let Err(e) = std::fs::write(&path, hex) {
-//         eprintln!("Failed to save CPU{} progress: {}", thread_id, e);
-//     }
-// }
 
 fn save_alloc_state(alloc_arc: &Arc<Mutex<AllocState>>) {
     let a = alloc_arc.lock().unwrap();
@@ -455,25 +360,6 @@ fn append_log_line(line: String) {
         eprintln!("Failed to append to {}: {}", path, e);
     }
 }
-
-// fn save_found_key(thread_id: u64, key_bytes: &[u8; 32], decimal: u128, address: String) {
-//     let magic_key = format!(
-//         "Private Key (hex): {}\nPrivate Key (dec): {}\nAddress: {}\n",
-//         hex_encode(key_bytes),
-//         decimal,
-//         address
-//     );
-//
-//     if let Err(e) = std::fs::write(FOUND_FILE, magic_key) {
-//         eprintln!("Failed to save found key by CPU{}: {}", thread_id, e);
-//     }
-//
-//     println!("\n\n!!! PRIVATE KEY FOUND BY THREAD {} !!!", thread_id);
-//     println!("Private key (hex): {}", hex_encode(key_bytes));
-//     println!("Private key (dec): {}", decimal);
-//     println!("Address: {}", address);
-//     println!("Saved to {}", FOUND_FILE);
-// }
 
 fn backup_and_clean() {
     if !Path::new(BACKUPS_DIR).exists() {
@@ -1016,6 +902,8 @@ fn spawn_dashboard_thread(
     })
 }
 
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
+
 fn spawn_cpu_workers(
     cmd_tx: Sender<AllocCommand>,
     shutdown: Arc<AtomicBool>,
@@ -1268,18 +1156,6 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
     };
     let progress_percent = progress * 100.0;
 
-    // progress bar 50 chars wide
-    let bar_width = 60;
-    let filled = (progress * bar_width as f64).min(bar_width as f64).max(0.0) as usize;
-    let mut bar = String::new();
-    for i in 0..bar_width {
-        if i < filled {
-            bar.push('█');
-        } else {
-            bar.push('░');
-        }
-    }
-
     // ANSI colors
     let reset = "\x1b[0m";
     let cpu_color = "\x1b[34m"; // blue
@@ -1359,431 +1235,7 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
     let _ = io::stdout().flush();
 }
 
-// #######################################
-
-// fn run_cpu_solver() {
-//     let mode = "CPU";
-//     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
-//         backup_and_clean();
-//     } else {
-//         fs::create_dir_all(STATUS_DIR).expect("Failed to create status directory");
-//         println!("First run detected — starting fresh.");
-//     }
-//
-//     let num_threads = num_cpus::get();
-//
-//     let start: u128 = RANGE_START;
-//     let total_keys_u128: u128 = 1u128 << N_BITS;
-//     let end: u128 = start + total_keys_u128 - 1;
-//
-//     let global_start = Instant::now();
-//     let shutdown = Arc::new(AtomicBool::new(false));
-//
-//     // Initialize dashboard
-//     {
-//         let mut dash = DASHBOARD.lock().unwrap();
-//         dash.clear();
-//         dash.extend((0..num_threads).map(|_| ThreadStatus::default()));
-//     }
-//
-//     // Recover progress
-//     let alloc_log_path = if Path::new(ALLOC_LOG_FILE).exists() {
-//         ALLOC_LOG_FILE.to_string()
-//     } else {
-//         find_latest_backup_alloc_log()
-//     };
-//
-//     let (pending_from_log, farthest_end_from_log) = if !alloc_log_path.is_empty() {
-//         load_assignment_log_from_path(&alloc_log_path)
-//     } else {
-//         (VecDeque::new(), 0)
-//     };
-//
-//     let initial_next_i = if SEQUENCE_MODE {
-//         1u128
-//     } else {
-//         let next_i_from_file = load_next_i();
-//         std::cmp::max(farthest_end_from_log, next_i_from_file)
-//     };
-//
-//     let alloc = Arc::new(Mutex::new(AllocState {
-//         next_i: initial_next_i.min(total_keys_u128),
-//         pending: pending_from_log.clone(),
-//     }));
-//
-//     let _ = fs::remove_file(ALLOC_LOG_FILE);
-//     File::create(ALLOC_LOG_FILE).expect("Failed to create new ALLOC.log");
-//
-//     println!("Recovered {} unfinished chunks.", pending_from_log.len());
-//
-//     // Dashboard thread
-//     let dash_thread = {
-//         let dash_shutdown = shutdown.clone();
-//         spawn(move || {
-//             while !dash_shutdown.load(Ordering::Relaxed) {
-//                 print_dashboard(mode, start, end, global_start, num_threads);
-//                 sleep(Duration::from_secs(2));
-//             }
-//             print_dashboard(mode, start, end, global_start, num_threads);
-//         })
-//     };
-//
-//     // Panic hook
-//     {
-//         let alloc_for_panic = alloc.clone();
-//         panic::set_hook(Box::new(move |_info| {
-//             save_alloc_state(&alloc_for_panic);
-//             eprintln!("\n\nPanic detected! Progress saved.");
-//             backup_and_clean();
-//             eprintln!("Backup done.");
-//         }));
-//     }
-//
-//     (0..num_threads).into_par_iter().for_each(|t| {
-//         let t_usize = t;
-//         let mut checked: u128 = 0;
-//         let mut last_stat = Instant::now();
-//         let mut last_save = Instant::now();
-//
-//         loop {
-//             if shutdown.load(Ordering::Relaxed) {
-//                 break;
-//             }
-//
-//             let maybe_chunk = {
-//                 let mut a = alloc.lock().unwrap();
-//
-//                 if let Some(ch) = a.pending.pop_front() {
-//                     Some(ch)
-//                 } else if a.next_i < total_keys_u128 {
-//                     let start_i = a.next_i;
-//                     let len = CPU_CHUNK_SIZE.min(total_keys_u128 - start_i);
-//
-//                     a.next_i += len;
-//
-//                     save_alloc_state(&alloc);
-//                     append_log_assigned(start_i, len);
-//
-//                     Some(Chunk { start_i, len })
-//                 } else {
-//                     None
-//                 }
-//             };
-//
-//             let chunk = match maybe_chunk {
-//                 Some(c) => c,
-//                 None => break,
-//             };
-//
-//             let mut i = chunk.start_i;
-//             let end_i = chunk.start_i + chunk.len;
-//
-//             while i < end_i {
-//                 if shutdown.load(Ordering::Relaxed) {
-//                     break;
-//                 }
-//
-//                 // Build batch of CPU_PARALLEL_KEYS
-//                 let mut key_bytes_batch = [[0u8; 32]; CPU_PARALLEL_KEYS];
-//                 let mut k_batch = [0u128; CPU_PARALLEL_KEYS];
-//                 let mut first_k_hex: Option<String> = None;
-//
-//                 let batch_len_u128 = (end_i - i).min(CPU_PARALLEL_KEYS as u128);
-//                 let batch_len = batch_len_u128 as usize;
-//
-//                 for p in 0..batch_len {
-//                     let current_i = i + p as u128;
-//                     let x = permute_index(current_i);
-//                     let k = start + x; // derived key inside fixed 2^71 domain
-//
-//                     k_batch[p] = k;
-//
-//                     if first_k_hex.is_none() {
-//                         first_k_hex = Some(format!("{:019X}", k));
-//                     }
-//
-//                     let be = k.to_be_bytes();
-//                     key_bytes_batch[p][16..].copy_from_slice(&be);
-//                 }
-//
-//                 // Check all keys in batch
-//                 for p in 0..batch_len {
-//                     let k = k_batch[p];
-//                     let key_bytes: [u8; 32] = key_bytes_batch[p];
-//
-//                     LOCAL_SECP.with(|secp| {
-//                         if let Ok(sk) = secp256k1::SecretKey::from_byte_array(key_bytes) {
-//                             let pk = secp256k1::PublicKey::from_secret_key(secp, &sk);
-//                             let compressed: [u8; 33] = pk.serialize();
-//
-//                             let h160 = Ripemd160::digest(Sha256::digest(compressed));
-//
-//                             if h160.as_slice() == TARGET_ENCODED {
-//                                 save_found_key(t as u64, &key_bytes, k, TARGET_ADDRESS.to_string());
-//                                 save_alloc_state(&alloc);
-//
-//                                 shutdown.store(true, Ordering::Relaxed);
-//                             }
-//                         }
-//                     });
-//                 }
-//
-//                 // Exact accounting for partial batches
-//                 checked += batch_len as u128;
-//
-//                 add_to_total_checked(batch_len as u128);
-//
-//                 let now = Instant::now();
-//
-//                 if now.duration_since(last_stat).as_millis() >= DASHBOARD_UPDATE_INTERVAL_MS {
-//                     {
-//                         let mut dash = DASHBOARD.lock().unwrap();
-//                         let status = &mut dash[t_usize];
-//                         let elapsed = now.duration_since(status.last_update).as_secs_f64();
-//
-//                         if elapsed > 0.1 {
-//                             status.speed_kps =
-//                                 (checked - status.last_checked) as f64 / elapsed / 1_000.0;
-//                         }
-//
-//                         status.checked = checked;
-//                         status.last_i = i + RANGE_START;
-//                         status.key_hex = first_k_hex.unwrap_or_else(|| String::from(""));
-//                         status.last_update = now;
-//                         status.last_checked = checked;
-//                     }
-//
-//                     last_stat = now;
-//                 }
-//
-//                 if now.duration_since(last_save).as_secs() >= PROGRESS_SAVE_INTERVAL_SEC {
-//                     save_alloc_state(&alloc);
-//
-//                     last_save = now;
-//                 }
-//
-//                 i += CPU_PARALLEL_KEYS as u128;
-//             }
-//
-//             // Mark chunk finished in the assignment log
-//             append_log_finished(chunk.start_i);
-//         }
-//
-//         save_alloc_state(&alloc);
-//         let mut dash = DASHBOARD.lock().unwrap();
-//         if t_usize < dash.len() {
-//             dash[t_usize].checked = checked;
-//         }
-//     });
-//
-//     shutdown.store(true, Ordering::Relaxed);
-//     dash_thread.join().unwrap();
-//
-//     print_dashboard(mode, start, end, global_start, num_threads);
-//
-//     if !shutdown.load(Ordering::Relaxed) {
-//         println!("\nSearch completed across active threads. No key found.");
-//     }
-// }
-//
-// fn run_gpu_solver() {
-//     let mode = "GPU";
-//
-//     if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
-//         backup_and_clean();
-//     } else {
-//         fs::create_dir_all(STATUS_DIR).expect("Failed to create status directory");
-//         println!("First run (GPU) — starting fresh.");
-//     }
-//
-//     let start: u128 = RANGE_START;
-//     let total_keys_u128: u128 = 1u128 << N_BITS;
-//     let end: u128 = start + total_keys_u128 - 1;
-//
-//     let solver = match GpuSolver::new() {
-//         Ok(s) => s,
-//         Err(e) => {
-//             eprintln!("GPU initialization failed: {}", e);
-//             return;
-//         }
-//     };
-//
-//     let shutdown = Arc::new(AtomicBool::new(false));
-//     let global_start = Instant::now();
-//
-//     // Dashboard: show single "GPU" worker
-//     {
-//         let mut dash = DASHBOARD.lock().unwrap();
-//         dash.clear();
-//         dash.push(ThreadStatus {
-//             key_hex: String::from("initializing..."),
-//             ..Default::default()
-//         });
-//     }
-//
-//     // Recover progress
-//     let alloc_log_path = if Path::new(ALLOC_LOG_FILE).exists() {
-//         ALLOC_LOG_FILE.to_string()
-//     } else {
-//         find_latest_backup_alloc_log()
-//     };
-//
-//     let (pending, farthest) = if !alloc_log_path.is_empty() {
-//         load_assignment_log_from_path(&alloc_log_path)
-//     } else {
-//         (VecDeque::new(), 0)
-//     };
-//
-//     let next_i = if SEQUENCE_MODE {
-//         1u128
-//     } else {
-//         std::cmp::max(farthest, load_next_i()).min(total_keys_u128)
-//     };
-//
-//     let mut current_i = next_i;
-//     let mut recovered = pending;
-//
-//     let _ = fs::remove_file(ALLOC_LOG_FILE);
-//     File::create(ALLOC_LOG_FILE).unwrap();
-//
-//     let alloc = Arc::new(Mutex::new(AllocState {
-//         next_i: current_i.min(total_keys_u128),
-//         pending: recovered.clone(),
-//     }));
-//
-//     // Dashboard thread
-//     let dash_thread = {
-//         let shutdown = shutdown.clone();
-//         spawn(move || {
-//             while !shutdown.load(Ordering::Relaxed) {
-//                 print_dashboard(mode, start, end, global_start, 1); // 1 = GPU "thread"
-//                 sleep(Duration::from_secs(2));
-//             }
-//             print_dashboard(mode, start, end, global_start, 1);
-//         })
-//     };
-//
-//     let panic_alloc = alloc.clone();
-//     // Panic hook
-//     panic::set_hook(Box::new(move |_| {
-//         eprintln!("\nPanic! Saving progress...");
-//         save_alloc_state(&panic_alloc);
-//         backup_and_clean();
-//         eprintln!("Backup done.");
-//     }));
-//
-//     println!("Starting GPU search from index: {:X}", current_i);
-//
-//     // First process recovered chunks
-//     while let Some(chunk) = recovered.pop_front() {
-//         if FOUND.load(Ordering::Relaxed) {
-//             break;
-//         }
-//
-//         println!(
-//             "Processing recovered chunk: {:X}..{:X}",
-//             chunk.start_i,
-//             chunk.start_i + chunk.len
-//         );
-//
-//         if let Some(key) = solver.search_batch(chunk.start_i).unwrap_or(None) {
-//             FOUND.store(true, Ordering::Relaxed);
-//             save_found_key_gpu(key);
-//             break;
-//         }
-//
-//         // add_to_total_checked(batch_len as u128);
-//         current_i = chunk.start_i + chunk.len;
-//         save_alloc_state(&alloc);
-//         append_log_finished(chunk.start_i);
-//
-//         update_gpu_dashboard(current_i, chunk.len);
-//     }
-//
-//     // Main search loop
-//     let mut last_log_time = Instant::now();
-//     let mut pending_chunks: Vec<(u128, u128)> = Vec::new(); // (start, len)
-//
-//     while current_i < total_keys_u128 && !FOUND.load(Ordering::Relaxed) {
-//         let len = GPU_CHUNK_SIZE.min(total_keys_u128 - current_i);
-//         let chunk_start = current_i;
-//
-//         // Remember chunk
-//         pending_chunks.push((chunk_start, len));
-//
-//         // Perform GPU search
-//         if let Some(key) = solver.search_batch(current_i).unwrap_or(None) {
-//             FOUND.store(true, Ordering::Relaxed);
-//             save_found_key_gpu(key);
-//             break;
-//         }
-//
-//         add_to_total_checked(len);
-//         current_i += len;
-//         update_gpu_dashboard(current_i, len);
-//
-//         // 4. Flush pending logs only every 5 seconds
-//         let now = Instant::now();
-//         if now.duration_since(last_log_time).as_secs() >= PROGRESS_SAVE_INTERVAL_SEC {
-//             // 1. Update next_i
-//             save_alloc_state(&alloc);
-//
-//             // Write all pending assigned chunks
-//             for &(start, length) in &pending_chunks {
-//                 append_log_assigned(start, length);
-//             }
-//
-//             // Write all as finished
-//             for &(start, _) in &pending_chunks {
-//                 append_log_finished(start);
-//             }
-//
-//             pending_chunks.clear();
-//             last_log_time = now;
-//         }
-//     }
-//
-//     // Final flush on exit or found
-//     if !pending_chunks.is_empty() {
-//         for &(start, length) in &pending_chunks {
-//             append_log_assigned(start, length);
-//         }
-//         for &(start, _) in &pending_chunks {
-//             append_log_finished(start);
-//         }
-//     }
-//
-//     shutdown.store(true, Ordering::Relaxed);
-//     dash_thread.join().unwrap();
-//
-//     if FOUND.load(Ordering::Relaxed) {
-//         println!("\nKEY FOUND BY GPU! Saved to {}", FOUND_FILE);
-//     } else {
-//         println!("\nGPU search completed. No key found.");
-//     }
-// }
-
-// fn update_gpu_dashboard(current_i: u128, checked_this_batch: u128) {
-//     let now = Instant::now();
-//     let mut dash = DASHBOARD.lock().unwrap();
-//
-//     if let Some(status) = dash.get_mut(0) {
-//         let elapsed = now.duration_since(status.last_update).as_millis();
-//
-//         if elapsed >= 500 {
-//             status.speed_kps = (checked_this_batch / elapsed * 1_000) as f64;
-//         }
-//
-//         status.checked += checked_this_batch;
-//         status.last_i = RANGE_START + current_i;
-//
-//         let approx_key = RANGE_START + permute_index(current_i.saturating_sub(1));
-//
-//         status.key_hex = format!("{:019X}", approx_key);
-//         status.last_update = now;
-//         status.last_checked = status.checked;
-//     }
-// }
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
 fn save_found_key(private_key: u128) {
     let key_hex = format!("{:064x}", private_key);
