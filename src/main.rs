@@ -10,8 +10,6 @@ const TARGET_ENCODED: [u8; 20] = [
     191, 116, 19, 232, 223, 78, 122, 52, 206, 157, 193, 62, 47, 38, 72, 120, 62, 197, 74, 219,
 ];
 
-// Search mode: Sequence or PCG
-// const SEQUENCE_MODE: bool = false;
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SearchMode {
     Sequence,
@@ -19,7 +17,6 @@ enum SearchMode {
     PlusMinus,
 }
 
-// const SEARCH_MODE: SearchMode = SearchMode::PlusMinus;
 const PM_PIVOT_KEY_HEX: &str = "8f3f2a9c8b4e1f20";
 
 // Define only the start and the bit-size; derive end at runtime
@@ -119,9 +116,9 @@ static PANIC_OCCURRED: AtomicBool = AtomicBool::new(false);
 
 lazy_static::lazy_static! {
     static ref DASHBOARD: Arc<Mutex<Vec<ThreadStatus>>> = Arc::new(Mutex::new(Vec::new()));
-    pub static ref GLOBAL_COVERAGE_MAP: Arc<Mutex<CoverageMap>> = Arc::new(Mutex::new(CoverageMap {
-        intervals: BTreeMap::new(),
-    }));
+    // pub static ref GLOBAL_COVERAGE_MAP: Arc<Mutex<CoverageMap>> = Arc::new(Mutex::new(CoverageMap {
+    //     intervals: BTreeMap::new(),
+    // }));
 }
 
 thread_local! {
@@ -385,7 +382,22 @@ fn append_log_line(solving_mode: SearchMode, line: String) {
     }
 }
 
-fn backup_and_clean() {
+fn setup_status_dir(solving_mode: SearchMode) {
+    let status_dir = STATUS_DIR;
+    let mode_dir = format!("{}/{}", status_dir, mode_dir(solving_mode));
+
+    if Path::new(&mode_dir).exists() && fs::read_dir(&mode_dir).unwrap().count() > 0 {
+        backup_last_session();
+    } else {
+        fs::create_dir_all(&mode_dir).expect("Failed to create status directory");
+        File::create(get_alloc_log_path(solving_mode))
+            .expect("Failed to create new ALLOC_LOG_FILE");
+        File::create(get_global_next_path(solving_mode))
+            .expect("Failed to create new GLOBAL_NEXT_FILE");
+    }
+}
+
+fn backup_last_session() {
     if !Path::new(BACKUPS_DIR).exists() {
         fs::create_dir(BACKUPS_DIR).expect("Failed to create backups directory");
     }
@@ -555,35 +567,21 @@ fn main() {
     }
 }
 
-fn start_solver(mode: &str) {
-    let solving_mode;
-
-    loop {
-        print!("Select mode:\n  [1] Sequence\n  [2] PCG\n  [3] Plus+Minus\n\nChoice (1/2/3): ");
-        io::stdout().flush().unwrap();
-
+fn start_solver(device: &str) {
+    let solving_mode = loop {
+        print!("Select mode:\n [1] Sequence\n [2] PCG\n [3] Plus+Minus\n\nChoice (1/2/3): ");
+        std::io::stdout().flush().unwrap();
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        let choice = input.trim().to_lowercase();
-
-        match choice.as_str() {
-            "1" => {
-                solving_mode = SearchMode::Sequence;
-                break;
-            }
-            "2" => {
-                solving_mode = SearchMode::PCG;
-                break;
-            }
-            "3" => {
-                solving_mode = SearchMode::PlusMinus;
-                break;
-            }
+        std::io::stdin().read_line(&mut input).unwrap();
+        match input.trim() {
+            "1" => break SearchMode::Sequence,
+            "2" => break SearchMode::PCG,
+            "3" => break SearchMode::PlusMinus,
             _ => {
                 println!("Invalid choice. Please enter 1, 2 or 3.\n");
             }
         };
-    }
+    };
 
     setup_status_dir(solving_mode);
 
@@ -602,7 +600,7 @@ fn start_solver(mode: &str) {
 
     // 4. Dashboard initialization
     let cpu_threads = num_cpus::get();
-    let (workers, gpu_dash_index) = match mode {
+    let (workers, gpu_dash_index) = match device {
         "CPU" => (cpu_threads, None),
         "GPU" => (1, Some(0)),
         "Both" => (cpu_threads + 1, Some(cpu_threads)),
@@ -614,7 +612,7 @@ fn start_solver(mode: &str) {
         dash.clear();
         dash.resize(workers, ThreadStatus::default());
 
-        match mode {
+        match device {
             "CPU" => {
                 // all are CPU by default
             }
@@ -650,10 +648,10 @@ fn start_solver(mode: &str) {
     let _ = ready_rx.recv();
 
     // 6. Dashboard thread
-    let mode_string = mode.to_string();
+    let device_string = device.to_string();
     let dash_thread = spawn_dashboard_thread(
         solving_mode,
-        mode_string.clone(),
+        device_string.clone(),
         shutdown.clone(),
         start,
         end,
@@ -664,14 +662,13 @@ fn start_solver(mode: &str) {
     // 7. Start workers according to mode
     let mut worker_handles: Vec<JoinHandle<()>> = Vec::new();
 
-    match mode {
+    match device {
         "CPU" => {
             // CPU-only
             worker_handles.push(spawn_cpu_workers(
                 solving_mode,
                 cmd_tx.clone(),
                 shutdown.clone(),
-                start,
                 cpu_threads,
             ));
         }
@@ -681,7 +678,6 @@ fn start_solver(mode: &str) {
                 solving_mode,
                 cmd_tx.clone(),
                 shutdown.clone(),
-                start,
                 0, // dashboard index 0
             ));
         }
@@ -691,7 +687,6 @@ fn start_solver(mode: &str) {
                 solving_mode,
                 cmd_tx.clone(),
                 shutdown.clone(),
-                start,
                 cpu_threads,
             ));
 
@@ -701,7 +696,6 @@ fn start_solver(mode: &str) {
                     solving_mode,
                     cmd_tx.clone(),
                     shutdown.clone(),
-                    start,
                     idx,
                 ));
             }
@@ -721,21 +715,6 @@ fn start_solver(mode: &str) {
     // 10. Stop dashboard
     shutdown.store(true, Ordering::Relaxed);
     let _ = dash_thread.join();
-}
-
-fn setup_status_dir(solving_mode: SearchMode) {
-    let status_dir = STATUS_DIR;
-    let mode_dir = format!("{}/{}", status_dir, mode_dir(solving_mode));
-
-    if Path::new(&mode_dir).exists() && fs::read_dir(&mode_dir).unwrap().count() > 0 {
-        backup_and_clean();
-    } else {
-        fs::create_dir_all(&mode_dir).expect("Failed to create status directory");
-        File::create(get_alloc_log_path(solving_mode))
-            .expect("Failed to create new ALLOC_LOG_FILE");
-        File::create(get_global_next_path(solving_mode))
-            .expect("Failed to create new GLOBAL_NEXT_FILE");
-    }
 }
 
 fn recover_allocator(solving_mode: SearchMode, total_keys: u128) -> AllocState {
@@ -819,7 +798,7 @@ fn spawn_allocator_thread(
                     state.next_i += len;
 
                     append_log_assigned(solving_mode, start_i, len);
-
+                    // add_finished_chunk_to_coverage(solving_mode, start_i, len);
                     // Periodic save
                     let now = Instant::now();
                     if now.duration_since(last_save).as_secs() >= PROGRESS_SAVE_INTERVAL_SEC {
@@ -942,7 +921,7 @@ fn install_panic_hook(solving_mode: SearchMode, alloc: Arc<Mutex<AllocState>>) {
         eprintln!("PANIC: {}", info);
         let _ = std::panic::catch_unwind(|| {
             save_alloc_state(solving_mode, &alloc);
-            backup_and_clean();
+            backup_last_session();
             eprintln!("Progress saved and backup done.");
         });
     }));
@@ -950,7 +929,7 @@ fn install_panic_hook(solving_mode: SearchMode, alloc: Arc<Mutex<AllocState>>) {
 
 fn spawn_dashboard_thread(
     solving_mode: SearchMode,
-    mode: String,
+    device: String,
     shutdown: Arc<AtomicBool>,
     start: u128,
     end: u128,
@@ -959,10 +938,10 @@ fn spawn_dashboard_thread(
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         while !shutdown.load(Ordering::Relaxed) {
-            print_dashboard(solving_mode, &mode, start, end, global_start, workers);
+            print_dashboard(solving_mode, &device, start, end, global_start, workers);
             thread::sleep(Duration::from_secs(2));
         }
-        print_dashboard(solving_mode, &mode, start, end, global_start, workers);
+        print_dashboard(solving_mode, &device, start, end, global_start, workers);
     })
 }
 
@@ -972,7 +951,6 @@ fn spawn_cpu_workers(
     solving_mode: SearchMode,
     cmd_tx: Sender<AllocCommand>,
     shutdown: Arc<AtomicBool>,
-    start: u128,
     threads: usize,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -1112,7 +1090,6 @@ fn spawn_gpu_worker(
     solving_mode: SearchMode,
     cmd_tx: Sender<AllocCommand>,
     shutdown: Arc<AtomicBool>,
-    start: u128,
     dash_index: usize,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -1219,18 +1196,13 @@ fn spawn_gpu_worker(
 
 fn print_dashboard(
     solving_mode: SearchMode,
-    mode: &str,
+    device: &str,
     start: u128,
     end: u128,
     global_start: Instant,
     num_threads: usize,
 ) {
     let dash = DASHBOARD.lock().unwrap();
-
-    if let Ok(map) = GLOBAL_COVERAGE_MAP.lock() {
-        println!("Coverage heatmap (0 → 2^71):");
-        println!("[{}]", render_heatmap(&map));
-    }
 
     let low = TOTAL_CHECKED_LOW.load(Ordering::Relaxed);
     let high = TOTAL_CHECKED_HIGH.load(Ordering::Relaxed);
@@ -1269,30 +1241,20 @@ fn print_dashboard(
     println!("╚═════════════════════════════════════════╝");
     println!("Target: {}", TARGET_ADDRESS);
     println!("Range: {:019X} ──▶ {:019X}", start, end);
+    println!("Search mode: {}", mode_dir(solving_mode,));
     if solving_mode == SearchMode::PlusMinus {
         println!("PM Pivot: {:019X}", pm_pivot_key() + RANGE_START);
     }
 
-    println!("Search mode: {}", mode_dir(solving_mode,));
     println!("Threads: {}", num_threads);
-    if mode == "CPU" {
+    if device == "CPU" {
         println!("Parallel tasks: {}", CPU_PARALLEL_KEYS);
-    } else if mode == "GPU" {
+    } else if device == "GPU" {
         println!("Parallel tasks: {}", GPU_PARALLEL_KEYS);
     } else {
         println!("CPU Parallel tasks: {}", CPU_PARALLEL_KEYS);
         println!("GPU Parallel tasks: {}", GPU_PARALLEL_KEYS);
     };
-
-    if solving_mode == SearchMode::PlusMinus {
-        let max_i = load_next_i(solving_mode);
-        let max_radius = pm_radius(max_i);
-
-        println!(
-            "PM Coverage Radius: ±{:X} keys from pivot (~{:e})",
-            max_radius, max_radius as f64
-        );
-    }
 
     println!("\n");
 
@@ -1371,15 +1333,25 @@ fn print_dashboard(
         s,
     );
 
+    if solving_mode == SearchMode::PlusMinus {
+        let max_i = load_next_i(solving_mode);
+        let max_radius = pm_radius(max_i);
+
+        println!(
+            "║ PM Coverage Radius: ±{:12} │ Keys from pivot (~{:e})                                ║",
+            max_radius, max_radius as f64
+        );
+    }
+
     // println!("║ PROGRESS: {:>8.15}% │ [{}] ║", progress_percent, bar);
     println!(
         "╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════╝\n"
     );
 
-    if let Ok(map) = GLOBAL_COVERAGE_MAP.lock() {
-        println!("\nCoverage heatmap (0 → 2^71):");
-        println!("[{}]", render_heatmap(&map));
-    }
+    // if let Ok(map) = GLOBAL_COVERAGE_MAP.lock() {
+    //     println!("\nCoverage heatmap (0 → 2^71):");
+    //     println!("[{}]", render_heatmap(&map));
+    // }
 
     let _ = io::stdout().flush();
 }
@@ -1414,6 +1386,8 @@ fn add_to_total_checked(added: u128) {
         TOTAL_CHECKED_HIGH.fetch_add(carry, Ordering::Relaxed);
     }
 }
+
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
 
 fn pm_pivot_key() -> u128 {
     u128::from_str_radix(PM_PIVOT_KEY_HEX, 16).expect("Invalid PM pivot hex")
@@ -1451,6 +1425,13 @@ fn resolve_key_from_index(solving_mode: SearchMode, i: u128) -> Option<u128> {
     }
 }
 
+#[inline(always)]
+fn pm_radius(i: u128) -> u128 {
+    if i == 0 { 0 } else { (i + 1) / 2 }
+}
+
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
+
 fn mode_dir(solving_mode: SearchMode) -> String {
     match solving_mode {
         SearchMode::Sequence => String::from("SEQ"),
@@ -1471,111 +1452,4 @@ fn get_alloc_log_path(solving_mode: SearchMode) -> String {
     status_path(solving_mode, "ALLOC.log")
 }
 
-#[inline(always)]
-fn pm_radius(i: u128) -> u128 {
-    if i == 0 { 0 } else { (i + 1) / 2 }
-}
-
-pub const HEATMAP_WIDTH: usize = 110;
-
-pub struct CoverageMap {
-    /// start -> end (exclusive), merged & sorted
-    pub intervals: BTreeMap<u128, u128>,
-}
-
-/// Density → ASCII character mapping
-#[inline(always)]
-fn density_char(d: f64) -> char {
-    if d == 0.0 {
-        ' ' // Empty space for zero density
-    } else if d < 0.025 {
-        '·' // Minimal density
-    } else if d < 0.05 {
-        '░' // Very light shade
-    } else if d < 0.1 {
-        '▁' // Quarter block
-    } else if d < 0.15 {
-        '▂' // Lower eighth block
-    } else if d < 0.20 {
-        '▃' // Lower quarter block
-    } else if d < 0.30 {
-        '▄' // Lower half block
-    } else if d < 0.40 {
-        '▅' // Two-thirds block
-    } else if d < 0.50 {
-        '▆' // Three-quarters block
-    } else if d < 0.75 {
-        '▓' // Dark shade
-    } else {
-        '█' // Full block
-    }
-}
-
-/// Build a 110-character ASCII heatmap from coverage intervals
-pub fn build_heatmap(map: &CoverageMap) -> [char; HEATMAP_WIDTH] {
-    let domain_size: u128 = 1u128 << N_BITS;
-    let band_width: u128 = domain_size / HEATMAP_WIDTH as u128;
-
-    let mut covered_per_band = [0u128; HEATMAP_WIDTH];
-
-    for (&start, &end) in &map.intervals {
-        let mut s = start;
-        let e = end;
-
-        while s < e {
-            let band = (s / band_width) as usize;
-            if band >= HEATMAP_WIDTH {
-                break;
-            }
-
-            let band_end = ((band as u128) + 1) * band_width;
-            let chunk_end = e.min(band_end);
-
-            covered_per_band[band] += chunk_end - s;
-            s = chunk_end;
-        }
-    }
-
-    let mut out = [' '; HEATMAP_WIDTH];
-
-    for i in 0..HEATMAP_WIDTH {
-        let density = covered_per_band[i] as f64 / band_width as f64;
-        out[i] = density_char(density.min(1.0));
-    }
-
-    out
-}
-
-/// Render heatmap as a printable String
-pub fn render_heatmap(map: &CoverageMap) -> String {
-    let heat = build_heatmap(map);
-    heat.iter().collect()
-}
-
-/// Render heatmap with optional PM pivot marker (^)
-///
-/// `pivot_domain` must be the canonical domain index
-/// (i.e. key_index - RANGE_START)
-pub fn render_heatmap_with_pivot(map: &CoverageMap, pivot_domain: Option<u128>) -> String {
-    let domain_size: u128 = 1u128 << N_BITS;
-    let band_width: u128 = domain_size / HEATMAP_WIDTH as u128;
-
-    let heat = build_heatmap(map);
-    let mut out = String::with_capacity(HEATMAP_WIDTH + 1);
-
-    for c in heat {
-        out.push(c);
-    }
-
-    if let Some(pivot) = pivot_domain {
-        let band = (pivot / band_width) as usize;
-        if band < HEATMAP_WIDTH {
-            out.push('\n');
-            for i in 0..HEATMAP_WIDTH {
-                out.push(if i == band { '^' } else { ' ' });
-            }
-        }
-    }
-
-    out
-}
+// -.-. --- .--. -.-- .-. .. --. .... - / -.-. --- -. - .-. --- .-.. / --- .-- .-..
