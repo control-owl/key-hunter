@@ -1386,7 +1386,7 @@ extern "C" __global__ void generate_and_check_keys(
 ) {
     const bool debug = DEBUG_TEST_MODE;
 
-    uint64_t tid    = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     // ------------------------------------------------------------------
     // DEBUG MODE: force only thread 0 in block 0 to run (single key)

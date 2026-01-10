@@ -11,7 +11,16 @@ const TARGET_ENCODED: [u8; 20] = [
 ];
 
 // Search mode: Sequence or PCG
-const SEQUENCE_MODE: bool = false;
+// const SEQUENCE_MODE: bool = false;
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SearchMode {
+    Sequence,
+    PCG,
+    PlusMinus,
+}
+
+const SEARCH_MODE: SearchMode = SearchMode::PlusMinus;
+const PM_PIVOT_KEY_HEX: &str = "8f3f2a9c8b4e1f20";
 
 // Define only the start and the bit-size; derive end at runtime
 const RANGE_START: u128 = 0x800000000000000000;
@@ -32,8 +41,8 @@ const B_CONST: u128 = 0x1D3F84A5B7C29E3u128;
 const BACKUPS_DIR: &str = "backups";
 const STATUS_DIR: &str = "status";
 const FOUND_FILE: &str = "status/address.txt"; // save found result here
-const GLOBAL_NEXT_FILE: &str = "status/GLOBAL_NEXT"; // next unassigned index (hex)
-const ALLOC_LOG_FILE: &str = "status/ALLOC.log"; // assignment log
+// const GLOBAL_NEXT_FILE: &str = "status/GLOBAL_NEXT"; // next unassigned index (hex)
+// const ALLOC_LOG_FILE: &str = "status/ALLOC.log"; // assignment log
 
 // Dashboard & persistence cadence
 const DASHBOARD_UPDATE_INTERVAL_MS: u128 = 500; // per-thread display update
@@ -125,6 +134,8 @@ struct ThreadStatus {
     speed_kps: f64,
     last_update: Instant,
     last_checked: u128,
+
+    pm_radius: u128,
 }
 
 impl Default for ThreadStatus {
@@ -137,6 +148,8 @@ impl Default for ThreadStatus {
             speed_kps: 0.0,
             last_update: Instant::now(),
             last_checked: 0,
+
+            pm_radius: 0,
         }
     }
 }
@@ -219,10 +232,10 @@ impl GpuSolver {
 
         // --- Resolve constants once ---
         let (search_mode, range_start, block, grid, parallel_keys) = if GPU_TEST_MODE {
-            (SEQUENCE_MODE, 1u128, 1u32, 1u32, 1u64)
+            (SearchMode::Sequence, 1u128, 1u32, 1u32, 1u64)
         } else {
             (
-                SEQUENCE_MODE,
+                SEARCH_MODE,
                 RANGE_START,
                 GPU_BLOCK_SIZE,
                 GPU_GRID_SIZE,
@@ -249,10 +262,17 @@ impl GpuSolver {
 
         let stream = &self.stream;
 
+        let mode = match search_mode {
+            SearchMode::Sequence => true,
+            SearchMode::PCG => false,
+            SearchMode::PlusMinus => true,
+            // _ => 0,
+        };
+
         // --- Kernel launch ---
         unsafe {
             launch!(func<<<grid, block, 0, stream>>>(
-                search_mode,
+                mode,
                 parallel_keys,
                 start_lo,
                 start_hi,
@@ -282,11 +302,8 @@ impl GpuSolver {
         } else {
             let found_i = found as u128;
 
-            let actual_key = if search_mode {
-                found_i
-            } else {
-                RANGE_START + permute_index(found_i)
-            };
+            let actual_key =
+                resolve_key_from_index(found_i).expect("GPU returned out-of-range PM index");
 
             Ok(Some(actual_key))
         }
@@ -297,7 +314,7 @@ impl GpuSolver {
 
 #[inline(always)]
 fn permute_index(i: u128) -> u128 {
-    if SEQUENCE_MODE {
+    if SEARCH_MODE == SearchMode::Sequence {
         i
     } else {
         let mut y = A_CONST.wrapping_mul(i).wrapping_add(B_CONST) & N_MASK;
@@ -322,7 +339,7 @@ fn permute_index(i: u128) -> u128 {
 fn save_alloc_state(alloc_arc: &Arc<Mutex<AllocState>>) {
     let a = alloc_arc.lock().unwrap();
 
-    let path = GLOBAL_NEXT_FILE;
+    let path = get_global_next_path();
 
     if let Err(e) = std::fs::write(path, format!("{:X}", a.next_i)) {
         eprintln!("Failed to save GLOBAL_NEXT: {}", e);
@@ -330,7 +347,7 @@ fn save_alloc_state(alloc_arc: &Arc<Mutex<AllocState>>) {
 }
 
 fn load_next_i() -> u128 {
-    let path = GLOBAL_NEXT_FILE;
+    let path = get_global_next_path();
 
     if let Ok(s) = std::fs::read_to_string(path) {
         if let Ok(v) = u128::from_str_radix(s.trim(), 16) {
@@ -349,12 +366,12 @@ fn append_log_finished(start_i: u128) {
 }
 
 fn append_log_line(line: String) {
-    let path = ALLOC_LOG_FILE;
+    let path = get_alloc_log_path();
 
     if let Err(e) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
+        .open(&path)
         .and_then(|mut f| f.write_all(line.as_bytes()))
     {
         eprintln!("Failed to append to {}: {}", path, e);
@@ -666,18 +683,21 @@ fn start_solver(mode: &str) {
 }
 
 fn setup_status_dir() {
-    if Path::new(STATUS_DIR).exists() && fs::read_dir(STATUS_DIR).unwrap().count() > 0 {
+    let status_dir = STATUS_DIR;
+    let mode_dir = format!("{}/{}", status_dir, mode_dir());
+
+    if Path::new(&mode_dir).exists() && fs::read_dir(&mode_dir).unwrap().count() > 0 {
         backup_and_clean();
     } else {
-        fs::create_dir_all(STATUS_DIR).expect("Failed to create status directory");
-        File::create(ALLOC_LOG_FILE).expect("Failed to create new ALLOC_LOG_FILE");
-        File::create(GLOBAL_NEXT_FILE).expect("Failed to create new GLOBAL_NEXT_FILE");
+        fs::create_dir_all(&mode_dir).expect("Failed to create status directory");
+        File::create(get_alloc_log_path()).expect("Failed to create new ALLOC_LOG_FILE");
+        File::create(get_global_next_path()).expect("Failed to create new GLOBAL_NEXT_FILE");
     }
 }
 
 fn recover_allocator(total_keys: u128) -> AllocState {
-    let alloc_log_path = if Path::new(ALLOC_LOG_FILE).exists() {
-        ALLOC_LOG_FILE.to_string()
+    let alloc_log_path = if Path::new(&get_alloc_log_path()).exists() {
+        get_alloc_log_path()
     } else {
         find_latest_backup_alloc_log()
     };
@@ -688,26 +708,25 @@ fn recover_allocator(total_keys: u128) -> AllocState {
         (VecDeque::new(), 0)
     };
 
-    let next_i = {
-        let next_i_from_file = load_next_i();
-        let resume_point = std::cmp::max(farthest_end_from_log, next_i_from_file);
-
-        if SEQUENCE_MODE {
-            // Sequence mode: start from 1 only if no progress exists
-            if resume_point == 0 {
-                1u128
-            } else {
-                resume_point
-            }
-        } else {
-            // Normal mode: resume from farthest progress
-            resume_point
+    let next_i = match SEARCH_MODE {
+        SearchMode::PlusMinus => {
+            // PM must always restart from 0 (pivot-centered)
+            // 0u128
+            let resume = std::cmp::max(farthest_end_from_log, load_next_i());
+            if resume == 0 { 1 } else { resume }
         }
+
+        SearchMode::Sequence => {
+            let resume = std::cmp::max(farthest_end_from_log, load_next_i());
+            if resume == 0 { 1 } else { resume }
+        }
+
+        SearchMode::PCG => std::cmp::max(farthest_end_from_log, load_next_i()),
     }
     .min(total_keys);
 
-    let _ = fs::remove_file(ALLOC_LOG_FILE);
-    File::create(ALLOC_LOG_FILE).expect("Failed to create new ALLOC.log");
+    let _ = fs::remove_file(&alloc_log_path);
+    File::create(&alloc_log_path).expect("Failed to create new ALLOC.log");
 
     println!(
         "Recovered {} unfinished chunks. Starting from index: {:X}",
@@ -952,8 +971,10 @@ fn spawn_cpu_workers(
                     // Build batch
                     for p in 0..batch_len {
                         let current_i = i + p as u128;
-                        let x = permute_index(current_i);
-                        let k = start + x;
+                        let k = match resolve_key_from_index(current_i) {
+                            Some(k) => k,
+                            None => continue,
+                        };
                         k_batch[p] = k;
 
                         if first_k_hex.is_none() {
@@ -1000,15 +1021,22 @@ fn spawn_cpu_workers(
                                     (checked - status.last_checked) as f64 / elapsed / 1_000.0;
                             }
                             status.checked = checked;
-                            status.last_i = i + RANGE_START;
+                            status.last_i = match SEARCH_MODE {
+                                SearchMode::PlusMinus => chunk.start_i, // virtual PM index
+                                _ => RANGE_START + chunk.start_i,
+                            };
 
-                            let approx_key =
-                                RANGE_START + permute_index(chunk.start_i.saturating_sub(1));
-                            status.key_hex = format!("{:019X}", approx_key);
+                            if let Some(k) = resolve_key_from_index(chunk.start_i.saturating_sub(1))
+                            {
+                                status.key_hex = format!("{:019X}", k);
+                            }
 
-                            // status.key_hex = first_k_hex.clone().unwrap_or_default();
                             status.last_update = now;
                             status.last_checked = checked;
+
+                            if SEARCH_MODE == SearchMode::PlusMinus {
+                                status.pm_radius = pm_radius(chunk.start_i);
+                            }
                         }
                         last_stat = now;
                     }
@@ -1104,12 +1132,21 @@ fn spawn_gpu_worker(
                 }
 
                 status.checked += chunk.len;
-                status.last_i = start + chunk.start_i;
+                // status.last_i = start + chunk.start_i;
+                status.last_i = match SEARCH_MODE {
+                    SearchMode::PlusMinus => chunk.start_i, // virtual PM index
+                    _ => RANGE_START + chunk.start_i,
+                };
+
                 status.last_update = gpu_end;
                 status.last_checked = status.checked;
-                let approx_key = RANGE_START + permute_index(chunk.start_i.saturating_sub(1));
+                if let Some(k) = resolve_key_from_index(chunk.start_i.saturating_sub(1)) {
+                    status.key_hex = format!("{:019X}", k);
+                }
 
-                status.key_hex = format!("{:019X}", approx_key);
+                if SEARCH_MODE == SearchMode::PlusMinus {
+                    status.pm_radius = pm_radius(chunk.start_i);
+                }
             }
 
             // --- PERIODIC SAVE ---
@@ -1166,15 +1203,34 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
     println!("╔═════════════════════════════════════════╗");
     println!("║     KEY HUNTER - BITCOIN PUZZLE #72     ║");
     println!("╚═════════════════════════════════════════╝");
-    println!("Target Address: {}", TARGET_ADDRESS);
-    println!("Range : {:019X} ──▶ {:019X}", start, end);
-    println!("Threads : {}", num_threads);
+    println!("Target: {}", TARGET_ADDRESS);
+    println!("Range: {:019X} ──▶ {:019X}", start, end);
+    if SEARCH_MODE == SearchMode::PlusMinus {
+        println!("PM Pivot: {:019X}", pm_pivot_key() + RANGE_START);
+    }
+
+    println!("Search mode: {}", mode_dir());
+    println!("Threads: {}", num_threads);
     if mode == "CPU" {
-        println!("Parallel tasks: {}\n", CPU_PARALLEL_KEYS);
+        println!("Parallel tasks: {}", CPU_PARALLEL_KEYS);
     } else if mode == "GPU" {
-        println!("Parallel tasks: {}\n", GPU_PARALLEL_KEYS);
+        println!("Parallel tasks: {}", GPU_PARALLEL_KEYS);
     } else {
+        println!("CPU Parallel tasks: {}", CPU_PARALLEL_KEYS);
+        println!("GPU Parallel tasks: {}", GPU_PARALLEL_KEYS);
     };
+
+    if SEARCH_MODE == SearchMode::PlusMinus {
+        let max_i = load_next_i();
+        let max_radius = pm_radius(max_i);
+
+        println!(
+            "PM Coverage Radius: ±{:X} keys from pivot (~{:e})",
+            max_radius, max_radius as f64
+        );
+    }
+
+    println!("\n");
 
     // Separate counters for CPU and GPU display indices
     let mut cpu_idx = 0usize;
@@ -1187,26 +1243,50 @@ fn print_dashboard(mode: &str, start: u128, end: u128, global_start: Instant, nu
         match status.worker_type {
             WorkerType::CPU => {
                 print!("{}", cpu_color);
-                println!(
-                    "CPU {:2} Index: {} Current key: {} Checked: {:8}K keys Speed: {:6.1}K keys/s",
-                    cpu_idx,
-                    idx_hex,
-                    status.key_hex,
-                    status.checked / 1_000,
-                    status.speed_kps
-                );
+                if SEARCH_MODE == SearchMode::PlusMinus {
+                    println!(
+                        "CPU {:2} Radius: ±{:8} Key: {} Checked: {:8}K Speed: {:6.1}K/s",
+                        cpu_idx,
+                        status.pm_radius,
+                        status.key_hex,
+                        status.checked / 1_000,
+                        status.speed_kps
+                    );
+                } else {
+                    println!(
+                        "CPU {:2} Index: {} Key: {} Checked: {:8}K Speed: {:6.1}K/s",
+                        cpu_idx,
+                        idx_hex,
+                        status.key_hex,
+                        status.checked / 1_000,
+                        status.speed_kps
+                    );
+                }
+
                 cpu_idx += 1;
             }
             WorkerType::GPU => {
                 print!("{}", gpu_color);
-                println!(
-                    "GPU {:2} Index: {} Current key: {} Checked: {:8}K keys Speed: {:6.1}K keys/s",
-                    gpu_idx,
-                    idx_hex,
-                    status.key_hex,
-                    status.checked / 1_000,
-                    status.speed_kps
-                );
+                if SEARCH_MODE == SearchMode::PlusMinus {
+                    println!(
+                        "GPU {:2} Radius: ±{:8} Key: {} Checked: {:8}K Speed: {:6.1}K/s",
+                        gpu_idx,
+                        status.pm_radius,
+                        status.key_hex,
+                        status.checked / 1_000,
+                        status.speed_kps
+                    );
+                } else {
+                    println!(
+                        "GPU {:2} Index: {} Key: {} Checked: {:8}K Speed: {:6.1}K/s",
+                        gpu_idx,
+                        idx_hex,
+                        status.key_hex,
+                        status.checked / 1_000,
+                        status.speed_kps
+                    );
+                }
+
                 gpu_idx += 1;
             }
         }
@@ -1264,4 +1344,65 @@ fn add_to_total_checked(added: u128) {
     if carry > 0 {
         TOTAL_CHECKED_HIGH.fetch_add(carry, Ordering::Relaxed);
     }
+}
+
+fn pm_pivot_key() -> u128 {
+    u128::from_str_radix(PM_PIVOT_KEY_HEX, 16).expect("Invalid PM pivot hex")
+}
+
+#[inline(always)]
+fn plusminus_map(i: u128) -> i128 {
+    if i == 0 {
+        0
+    } else if i & 1 == 1 {
+        -((i + 1) as i128 / 2)
+    } else {
+        i as i128 / 2
+    }
+}
+
+#[inline(always)]
+fn resolve_key_from_index(i: u128) -> Option<u128> {
+    match SEARCH_MODE {
+        SearchMode::Sequence => Some(RANGE_START + i),
+
+        SearchMode::PCG => Some(RANGE_START + permute_index(i)),
+
+        SearchMode::PlusMinus => {
+            let base = pm_pivot_key() as i128;
+            let offset = plusminus_map(i);
+            let target = base + offset;
+
+            if target < 0 || target >= (1i128 << N_BITS) {
+                None
+            } else {
+                Some(RANGE_START + target as u128)
+            }
+        }
+    }
+}
+
+fn mode_dir() -> &'static str {
+    match SEARCH_MODE {
+        SearchMode::Sequence => "SEQ",
+        SearchMode::PCG => "PCG",
+        SearchMode::PlusMinus => "PM",
+    }
+}
+
+fn status_path(file: &str) -> String {
+    format!("status/{}/{}", mode_dir(), file)
+}
+
+fn get_global_next_path() -> String {
+    status_path("GLOBAL_NEXT")
+}
+
+fn get_alloc_log_path() -> String {
+    status_path("ALLOC.log")
+}
+
+#[inline(always)]
+fn pm_radius(i: u128) -> u128 {
+    if i == 0 { 0 } else { (i + 1) / 2 }
 }
