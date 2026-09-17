@@ -2,6 +2,13 @@
 
 This is a **brute-force** attempt for **Bitcoin Puzzle #72**.
 
+Right now I am not uploading my code. It is working fine on my pc. I even created a GUI in egui. And support for endomorphism.
+My version supports multiple kernels. A lot of changes in few months. 
+
+I really want to solve this, maybe thinking about small GPU farm. Will see. 
+
+Since there is no incentive for me, no more public updates. As soon as I solve the puzzle, I will upload my latest version. Or if somebody donates some crypto. Then it can be given away. no worries. For now its me against the world.  
+
 ### What is Bitcoin Puzzle #72?
 
 - Part of the famous ~1000 BTC challenge created in 2015.
