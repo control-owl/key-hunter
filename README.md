@@ -7,7 +7,9 @@ My version supports multiple kernels. A lot of changes in few months.
 
 I really want to solve this, maybe thinking about small GPU farm. Will see. 
 
-Since there is no incentive for me, no more public updates. As soon as I solve the puzzle, I will upload my latest version. Or if somebody donates some crypto. Then it can be given away. no worries. For now its me against the world.  
+Since there is no incentive for me, no more public updates. As soon as I solve the puzzle, I will upload my latest version. Or if somebody donates some crypto. Then it can be given away. no worries. For now its me against the world.
+
+For more information follow my blog post: [control-owl.github.io](https://control-owl.github.io/blog/post/2026/10/09/key-hunter.html)
 
 ### What is Bitcoin Puzzle #72?
 
