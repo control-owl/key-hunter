@@ -1,5 +1,13 @@
 # Bitcoin Puzzle #72 Key Hunter
 
+## Key-Hunter PRO (SOON)
+
+In following few days I will release Key-Hunter PRO version. Stay tuned. A lot of new changes.
+
+Let the best one wins!
+
+---
+
 This is a **brute-force** attempt for **Bitcoin Puzzle #72**.
 
 Right now I am not uploading my code. It is working fine on my pc. I even created a GUI in egui. And support for endomorphism.
