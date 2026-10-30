@@ -2,13 +2,23 @@
 
 ## Key-Hunter PRO (SOON)
 
-In following few days I will release Key-Hunter PRO version. Stay tuned. A lot of new changes.
+- For Christmass 2026 I will release Key-Hunter PRO version.
+- PRO has fancy GUI. 
+- PRO supports **all** unsolved Bitcoin puzzles, not just #72.
+- PRO version is not MIT. It is copyrighted.
+- PRO has CPU and GPU solvers. CPU solver is free for use. 
+- Kernel packs for GPU will be sold. Crypto only.
+- A blog post will be released soon to explain more. 
 
-Let the best one wins!
+
+https://github.com/control-owl/key-hunter-pro
+
+
+# This project will be archived when PRO goes live
 
 ---
 
-This is a **brute-force** attempt for **Bitcoin Puzzle #72**.
+This was a **brute-force** attempt for **Bitcoin Puzzle #72**.
 
 Right now I am not uploading my code. It is working fine on my pc. I even created a GUI in egui. And support for endomorphism.
 My version supports multiple kernels. A lot of changes in few months. 
