@@ -2,7 +2,7 @@
 
 ## Key-Hunter PRO (SOON)
 
-- For Christmass 2026 I will release Key-Hunter PRO version.
+- For Christmas 2026 I will release Key-Hunter PRO version.
 - PRO has fancy GUI. 
 - PRO supports **all** unsolved Bitcoin puzzles, not just #72.
 - PRO version is not MIT. It is copyrighted.
