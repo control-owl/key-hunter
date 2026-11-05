@@ -7,7 +7,7 @@
 - PRO supports **all** unsolved Bitcoin puzzles, not just #72.
 - PRO version is not MIT. It is copyrighted.
 - PRO has ALL mode (round-robin all unsolved pozzles)
-- PRO has machine unique PCG constants (everybody have their own magic numbers)
+- PRO has machine unique PCG constants (everybody has their own magic numbers)
 - PRO supports multi GPU systems with different nVidia arch
 - One unique .OWL file contains all kernels
 - PRO has CPU and GPU solvers. CPU solver is free for use. 
